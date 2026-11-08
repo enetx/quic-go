@@ -8,9 +8,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/quic-go/quic-go/internal/handshake"
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/qlogwriter"
+	"github.com/enetx/quic-go/internal/handshake"
+	"github.com/enetx/quic-go/internal/protocol"
+	"github.com/enetx/quic-go/qlogwriter"
 )
 
 // The StreamID is the ID of a QUIC stream.
@@ -104,6 +104,9 @@ type ConnectionIDGenerator interface {
 
 // Config contains all configuration data needed for a QUIC server or client.
 type Config struct {
+	// ClientHandshake provides optional application-owned client handshake controls.
+	ClientHandshake *ClientHandshake
+
 	// GetConfigForClient is called for incoming connections.
 	// If the error is not nil, the connection attempt is refused.
 	GetConfigForClient func(info *ClientInfo) (*Config, error)

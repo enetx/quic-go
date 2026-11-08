@@ -1,0 +1,10 @@
+{
+  "source": "https://github.com/quic-go/quic-go",
+  "version": "v0.65.0",
+  "commit": "aa265c3fc6489e3bfa8071b333be95e0e887a51d",
+  "module": "github.com/enetx/quic-go",
+  "minimum_go": "1.27",
+  "reference_only": {
+    "httpcloak": "3a426f92c44af452a249b388a16ae3720097e50a"
+  }
+}

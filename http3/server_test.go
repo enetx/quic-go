@@ -8,19 +8,18 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"runtime"
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3/internal/testdata"
-	"github.com/quic-go/quic-go/http3/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
-	"github.com/quic-go/quic-go/quicvarint"
-	"github.com/quic-go/quic-go/testutils/events"
-
+	"github.com/enetx/http"
+	"github.com/enetx/http/httptest"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3/internal/testdata"
+	"github.com/enetx/quic-go/http3/qlog"
+	"github.com/enetx/quic-go/qlogwriter"
+	"github.com/enetx/quic-go/quicvarint"
+	"github.com/enetx/quic-go/testutils/events"
 	"github.com/stretchr/testify/require"
 )
 
@@ -76,7 +75,7 @@ func TestServerSettings(t *testing.T) {
 func testServerSettings(t *testing.T, enableDatagrams bool, other map[uint64]uint64) {
 	s := Server{
 		EnableDatagrams:    enableDatagrams,
-		AdditionalSettings: other,
+		AdditionalSettings: orderedTestSettings(other),
 	}
 	s.init()
 
@@ -108,7 +107,7 @@ func testServerSettings(t *testing.T, enableDatagrams bool, other map[uint64]uin
 	// Extended CONNECT is always supported
 	require.True(t, settingsFrame.ExtendedConnect)
 	require.Equal(t, settingsFrame.Datagram, enableDatagrams)
-	require.Equal(t, settingsFrame.Other, other)
+	require.Equal(t, orderedTestSettings(other), settingsFrame.Other)
 }
 
 func TestServerRequestHandling(t *testing.T) {
@@ -414,12 +413,14 @@ func TestServerHandlerReturnsMidFrame(t *testing.T) {
 	require.NoError(t, str.Close())
 
 	done := make(chan struct{})
+	controller := make(chan *http.ResponseController, 1)
 	s := &Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer close(done)
 			rc := http.NewResponseController(w)
-			// the client doesn't read the response, so the write blocks once the flow control window is used up
-			rc.SetWriteDeadline(time.Now().Add(scaleDuration(10 * time.Millisecond)))
+			controller <- rc
+			// The client arms the deadline after observing the DATA frame header,
+			// so scheduler delays cannot expire it before the frame starts.
 			w.Write(make([]byte, 10<<20))
 			// flushing succeeds, but the DATA frame is still unfinished
 			rc.SetWriteDeadline(time.Time{})
@@ -427,6 +428,23 @@ func TestServerHandlerReturnsMidFrame(t *testing.T) {
 	}
 	go s.ServeQUICConn(serverConn)
 	defer s.Close()
+
+	require.NoError(t, str.SetReadDeadline(time.Now().Add(scaleDuration(time.Second))))
+	r := quicvarint.NewReader(str)
+	frameType, err := quicvarint.Read(r)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, frameType) // HEADERS
+	length, err := quicvarint.Read(r)
+	require.NoError(t, err)
+	_, err = io.CopyN(io.Discard, str, int64(length))
+	require.NoError(t, err)
+	frameType, err = quicvarint.Read(r)
+	require.NoError(t, err)
+	require.Zero(t, frameType) // DATA
+	length, err = quicvarint.Read(r)
+	require.NoError(t, err)
+	require.Positive(t, length)
+	require.NoError(t, (<-controller).SetWriteDeadline(time.Now().Add(-time.Second)))
 
 	select {
 	case <-done:

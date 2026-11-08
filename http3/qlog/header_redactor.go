@@ -2,11 +2,11 @@ package qlog
 
 import (
 	"context"
-	"net/http"
 	"strings"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/qlogwriter"
+	"github.com/enetx/http"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/qlogwriter"
 )
 
 // RedactHeaders wraps a QUIC connection tracer to redact HTTP/3 header and trailer field values.

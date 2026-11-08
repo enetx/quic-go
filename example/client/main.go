@@ -7,14 +7,14 @@ import (
 	"flag"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"sync"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
-	"github.com/quic-go/quic-go/internal/testdata"
-	"github.com/quic-go/quic-go/qlog"
+	"github.com/enetx/http"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3"
+	"github.com/enetx/quic-go/internal/testdata"
+	"github.com/enetx/quic-go/qlog"
 )
 
 func main() {

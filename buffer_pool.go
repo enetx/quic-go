@@ -3,7 +3,7 @@ package quic
 import (
 	"sync"
 
-	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/enetx/quic-go/internal/protocol"
 )
 
 type packetBuffer struct {
@@ -61,6 +61,10 @@ func (b *packetBuffer) putBack() {
 	}
 	if cap(b.Data) == protocol.MaxLargePacketBufferSize {
 		largeBufferPool.Put(b)
+		return
+	}
+	if cap(b.Data) == MaxUDPReceivePacketSize {
+		jumboReceivePool.Put(b)
 		return
 	}
 	panic("putPacketBuffer called with packet of wrong size!")

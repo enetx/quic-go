@@ -8,17 +8,17 @@ import (
 	"io"
 	"log"
 	"mime/multipart"
-	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/enetx/http"
 	_ "net/http/pprof"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
-	"github.com/quic-go/quic-go/internal/testdata"
-	"github.com/quic-go/quic-go/qlog"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3"
+	"github.com/enetx/quic-go/internal/testdata"
+	"github.com/enetx/quic-go/qlog"
 )
 
 type binds []string

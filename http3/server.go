@@ -9,16 +9,17 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"net/http"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
+	"github.com/enetx/g"
+	"github.com/enetx/http"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3/qlog"
+	"github.com/enetx/quic-go/qlogwriter"
 )
 
 // NextProtoH3 is the ALPN protocol negotiated during the TLS handshake, for QUIC v1 and v2.
@@ -178,7 +179,7 @@ type Server struct {
 
 	// AdditionalSettings specifies additional HTTP/3 settings.
 	// It is invalid to specify any settings defined by RFC 9114 (HTTP/3) and RFC 9297 (HTTP Datagrams).
-	AdditionalSettings map[uint64]uint64
+	AdditionalSettings g.MapOrd[uint64, uint64]
 
 	// IdleTimeout specifies how long until idle clients connection should be
 	// closed. Idle refers only to the HTTP/3 layer, activity at the QUIC layer

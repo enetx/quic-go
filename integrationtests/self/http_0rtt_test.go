@@ -5,16 +5,16 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
-	quicproxy "github.com/quic-go/quic-go/integrationtests/tools/proxy"
-	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/enetx/http"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3"
+	quicproxy "github.com/enetx/quic-go/integrationtests/tools/proxy"
+	"github.com/enetx/quic-go/internal/protocol"
 
 	"github.com/stretchr/testify/require"
 )

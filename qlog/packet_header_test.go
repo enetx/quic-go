@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/qlogwriter/jsontext"
+	"github.com/enetx/quic-go/internal/protocol"
+	"github.com/enetx/quic-go/qlogwriter/jsontext"
 
 	"github.com/stretchr/testify/require"
 )

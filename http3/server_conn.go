@@ -5,15 +5,15 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net/http"
 	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/enetx/http"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/qlogwriter"
 	"github.com/quic-go/qpack"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/qlogwriter"
 )
 
 // RawServerConn is an HTTP/3 server connection.
@@ -28,7 +28,7 @@ type RawServerConn struct {
 	requestHandler http.Handler
 	maxHeaderBytes int
 
-	decoder       *qpack.Decoder
+	decoder       fieldDecoder
 	priorityAware atomic.Bool // whether the client sent an RFC 9218 priority signal
 
 	qlogger qlogwriter.Recorder
@@ -98,6 +98,7 @@ func (c *RawServerConn) requestMaxHeaderBytes() int {
 }
 
 func (c *RawServerConn) openControlStream(settings *settingsFrame) (*quic.SendStream, error) {
+	c.rawConn.configureQPACK(settings.Other)
 	return c.rawConn.openControlStream(settings)
 }
 
@@ -110,7 +111,7 @@ func (c *RawServerConn) handleRequestStream(str *stateTrackingStream) {
 
 	conn := c.rawConn
 	qlogger := c.qlogger
-	decoder := c.decoder
+	decoder := bindFieldDecoder(c.decoder, conn, c.serverContext, str, c.requestMaxHeaderBytes())
 	connCtx := c.serverContext
 	maxHeaderBytes := c.requestMaxHeaderBytes()
 

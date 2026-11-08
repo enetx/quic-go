@@ -3,10 +3,10 @@ package ackhandler
 import (
 	"fmt"
 
-	"github.com/quic-go/quic-go/internal/monotime"
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/utils"
-	"github.com/quic-go/quic-go/internal/wire"
+	"github.com/enetx/quic-go/internal/monotime"
+	"github.com/enetx/quic-go/internal/protocol"
+	"github.com/enetx/quic-go/internal/utils"
+	"github.com/enetx/quic-go/internal/wire"
 )
 
 type ReceivedPacketHandler struct {

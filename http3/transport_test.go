@@ -7,14 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
-
+	"github.com/enetx/http"
+	"github.com/enetx/http/httptest"
+	"github.com/enetx/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -103,7 +102,7 @@ func TestRequestValidation(t *testing.T) {
 				r.Header.Add("Authorization", "Bearer secret\x00")
 				return r
 			}(),
-			expectedErr: `http3: invalid http header field value for key "Authorization"`,
+			expectedErr: `http3: invalid http header field value "Bearer secret\x00" for key Authorization`,
 		},
 		{
 			name: "invalid method",

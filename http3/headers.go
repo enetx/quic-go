@@ -5,19 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"net/textproto"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 
-	"golang.org/x/net/http/httpguts"
-
+	"github.com/enetx/http"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3/qlog"
+	"github.com/enetx/quic-go/qlogwriter"
 	"github.com/quic-go/qpack"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
+	"golang.org/x/net/http/httpguts"
 )
 
 type qpackError struct{ err error }
@@ -483,7 +482,7 @@ func writeTrailers(wr io.Writer, trailers http.Header, streamID quic.StreamID, q
 	return true, err
 }
 
-func decodeTrailers(r io.Reader, hf *headersFrame, maxHeaderBytes int, decoder *qpack.Decoder, qlogger qlogwriter.Recorder, streamID quic.StreamID) (http.Header, error) {
+func decodeTrailers(r io.Reader, hf *headersFrame, maxHeaderBytes int, decoder fieldDecoder, qlogger qlogwriter.Recorder, streamID quic.StreamID) (http.Header, error) {
 	if hf.Length > uint64(maxHeaderBytes) {
 		maybeQlogInvalidHeadersFrame(qlogger, streamID, hf.Length)
 		return nil, fmt.Errorf("http3: HEADERS frame too large: %d bytes (max: %d)", hf.Length, maxHeaderBytes)

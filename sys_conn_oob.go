@@ -18,9 +18,9 @@ import (
 	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
 
-	"github.com/quic-go/quic-go/internal/monotime"
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/utils"
+	"github.com/enetx/quic-go/internal/monotime"
+	"github.com/enetx/quic-go/internal/protocol"
+	"github.com/enetx/quic-go/internal/utils"
 )
 
 const (
@@ -43,6 +43,7 @@ func isECNDisabledUsingEnv() bool {
 }
 
 type oobConn struct {
+	receivePacketSize int
 	OOBCapablePacketConn
 	batchConn batchConn
 
@@ -145,8 +146,7 @@ func (c *oobConn) ReadPacket() (receivedPacket, error) {
 		c.messages = c.messages[:batchSize]
 		// replace buffers data buffers up to the packet that has been consumed during the last ReadBatch call
 		for i := uint8(0); i < c.readPos; i++ {
-			buffer := getPacketBuffer()
-			buffer.Data = buffer.Data[:protocol.MaxPacketBufferSize]
+			buffer := receivePacketBuffer(c.receivePacketSize)
 			c.buffers[i] = buffer
 			c.messages[i].Buffers[0] = c.buffers[i].Data
 		}

@@ -5,14 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/http/httptrace"
 	"time"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
-
+	"github.com/enetx/http"
+	"github.com/enetx/http/httptrace"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3/qlog"
+	"github.com/enetx/quic-go/qlogwriter"
 	"github.com/quic-go/qpack"
 )
 
@@ -287,7 +286,7 @@ type RequestStream struct {
 
 	responseBody io.ReadCloser // set by ReadResponse
 
-	decoder            *qpack.Decoder
+	decoder            fieldDecoder
 	requestWriter      *requestWriter
 	maxHeaderBytes     int
 	reqDone            chan<- struct{}
@@ -304,7 +303,7 @@ func newRequestStream(
 	str *Stream,
 	requestWriter *requestWriter,
 	reqDone chan<- struct{},
-	decoder *qpack.Decoder,
+	decoder fieldDecoder,
 	disableCompression bool,
 	maxHeaderBytes int,
 	rsp *http.Response,
@@ -512,7 +511,9 @@ func (s *RequestStream) ReadResponse() (*http.Response, error) {
 	}
 	if err != nil {
 		errCode := ErrCodeMessageError
-		if _, ok := errors.AsType[*qpackError](err); ok {
+		if errors.Is(err, errHeaderTooLarge) {
+			errCode = ErrCodeExcessiveLoad
+		} else if _, ok := errors.AsType[*qpackError](err); ok {
 			errCode = ErrCodeQPACKDecompressionFailed
 		}
 		s.str.CancelRead(quic.StreamErrorCode(errCode))

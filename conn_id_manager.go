@@ -5,10 +5,10 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/qerr"
-	"github.com/quic-go/quic-go/internal/utils"
-	"github.com/quic-go/quic-go/internal/wire"
+	"github.com/enetx/quic-go/internal/protocol"
+	"github.com/enetx/quic-go/internal/qerr"
+	"github.com/enetx/quic-go/internal/utils"
+	"github.com/enetx/quic-go/internal/wire"
 )
 
 type newConnID struct {
@@ -18,7 +18,8 @@ type newConnID struct {
 }
 
 type connIDManager struct {
-	queue []newConnID
+	queue         []newConnID
+	activeIDLimit uint64
 
 	highestUsedSequenceNumber uint64 // the highest sequence number taken from the queue
 	pathMx                    sync.Mutex
@@ -70,7 +71,7 @@ func (h *connIDManager) Add(f *wire.NewConnectionIDFrame) error {
 	if err := h.add(f); err != nil {
 		return err
 	}
-	if len(h.queue) >= protocol.MaxActiveConnectionIDs {
+	if uint64(len(h.queue)) >= h.activeConnectionIDLimit() {
 		return &qerr.TransportError{ErrorCode: qerr.ConnectionIDLimitError}
 	}
 	return nil
@@ -256,7 +257,7 @@ func (h *connIDManager) shouldUpdateConnID() bool {
 	// For later changes, only change if
 	// 1. The queue of connection IDs is filled more than 50%.
 	// 2. We sent at least PacketsPerConnectionID packets
-	return 2*len(h.queue) >= protocol.MaxActiveConnectionIDs &&
+	return 2*uint64(len(h.queue)) >= h.activeConnectionIDLimit() &&
 		h.packetsSinceLastChange >= h.packetsPerConnectionID
 }
 

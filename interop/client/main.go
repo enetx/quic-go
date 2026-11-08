@@ -7,20 +7,20 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/enetx/http"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
-	"github.com/quic-go/quic-go/internal/handshake"
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/qtls"
-	"github.com/quic-go/quic-go/interop/http09"
-	"github.com/quic-go/quic-go/interop/utils"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3"
+	"github.com/enetx/quic-go/internal/handshake"
+	"github.com/enetx/quic-go/internal/protocol"
+	"github.com/enetx/quic-go/internal/qtls"
+	"github.com/enetx/quic-go/interop/http09"
+	"github.com/enetx/quic-go/interop/utils"
 )
 
 var errUnsupported = errors.New("unsupported test case")

@@ -7,13 +7,13 @@ import (
 	"io"
 	"log"
 	"net"
-	"net/http"
 	"strings"
 	"sync"
 
+	"github.com/enetx/http"
 	"golang.org/x/net/idna"
 
-	"github.com/quic-go/quic-go"
+	"github.com/enetx/quic-go"
 )
 
 // MethodGet0RTT allows a GET request to be sent using 0-RTT.

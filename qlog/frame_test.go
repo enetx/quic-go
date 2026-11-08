@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/qerr"
-	"github.com/quic-go/quic-go/internal/wire"
-	"github.com/quic-go/quic-go/qlogwriter/jsontext"
+	"github.com/enetx/quic-go/internal/protocol"
+	"github.com/enetx/quic-go/internal/qerr"
+	"github.com/enetx/quic-go/internal/wire"
+	"github.com/enetx/quic-go/qlogwriter/jsontext"
 
 	"github.com/stretchr/testify/require"
 )

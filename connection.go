@@ -16,15 +16,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/quic-go/quic-go/internal/ackhandler"
-	"github.com/quic-go/quic-go/internal/handshake"
-	"github.com/quic-go/quic-go/internal/monotime"
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/qerr"
-	"github.com/quic-go/quic-go/internal/utils"
-	"github.com/quic-go/quic-go/internal/wire"
-	"github.com/quic-go/quic-go/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
+	"github.com/enetx/quic-go/internal/ackhandler"
+	"github.com/enetx/quic-go/internal/handshake"
+	"github.com/enetx/quic-go/internal/monotime"
+	"github.com/enetx/quic-go/internal/protocol"
+	"github.com/enetx/quic-go/internal/qerr"
+	"github.com/enetx/quic-go/internal/utils"
+	"github.com/enetx/quic-go/internal/wire"
+	"github.com/enetx/quic-go/qlog"
+	"github.com/enetx/quic-go/qlogwriter"
 )
 
 type unpacker interface {
@@ -495,6 +495,7 @@ var newClientConnection = func(
 	} else {
 		params.MaxDatagramFrameSize = protocol.InvalidByteCount
 	}
+	tlsFactory := s.configureClientHandshake(params)
 	if s.qlogger != nil {
 		s.qlogTransportParameters(params, protocol.PerspectiveClient)
 	}
@@ -507,6 +508,7 @@ var newClientConnection = func(
 		s.qlogger,
 		logger,
 		s.version,
+		tlsFactory,
 	)
 	s.cryptoStreamHandler = cs
 	s.cryptoStreamManager = newCryptoStreamManager(s.initialStream, s.handshakeStream, oneRTTStream)
@@ -522,6 +524,7 @@ var newClientConnection = func(
 func (c *Conn) preSetup(r *pathReceiver) {
 	c.largestRcvdAppData = protocol.InvalidPacketNumber
 	c.initialStream = newInitialCryptoStream(c.perspective == protocol.PerspectiveClient)
+	c.configureInitialCryptoStream()
 	c.handshakeStream = newCryptoStream()
 	c.sendQueue = newSendQueue(c.conn)
 	c.retransmissionQueue = newRetransmissionQueue()
@@ -2240,7 +2243,7 @@ func (c *Conn) handleAckFrame(frame *wire.AckFrame, encLevel protocol.Encryption
 }
 
 func (c *Conn) handleDatagramFrame(f *wire.DatagramFrame) error {
-	if f.Length(c.version) > wire.MaxDatagramSize {
+	if f.Length(c.version) > c.maxReceiveDatagramFrameSize() {
 		return &qerr.TransportError{
 			ErrorCode:    qerr.ProtocolViolation,
 			ErrorMessage: "DATAGRAM frame too large",
@@ -3036,7 +3039,7 @@ func (c *Conn) newFlowController(id protocol.StreamID) *streamFlowController {
 	return newStreamFlowController(
 		id,
 		c.connFlowController,
-		protocol.ByteCount(c.config.InitialStreamReceiveWindow),
+		c.initialStreamReceiveWindow(id),
 		protocol.ByteCount(c.config.MaxStreamReceiveWindow),
 		initialSendWindow,
 		c.rttStats,

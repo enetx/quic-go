@@ -6,20 +6,20 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
-	"net/http/httptrace"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/enetx/http"
+	httpcommon "github.com/enetx/http/headerorder"
+	"github.com/enetx/http/httptrace"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3/qlog"
+	"github.com/enetx/quic-go/qlogwriter"
+	"github.com/quic-go/qpack"
 	"golang.org/x/net/http/httpguts"
 	"golang.org/x/net/http2/hpack"
 	"golang.org/x/net/idna"
-
-	"github.com/quic-go/qpack"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
 )
 
 const bodyCopyBufferSize = 8 * 1024
@@ -135,37 +135,73 @@ func (w *requestWriter) encodeHeaders(req *http.Request, addGzipHeader bool, tra
 	// potentially pollute our hpack state. (We want to be able to
 	// continue to reuse the hpack encoder for future requests)
 	for k, vv := range req.Header {
+		// Skip validation for special header order keys
+		if k == httpcommon.HeaderOrderKey || k == httpcommon.PHeaderOrderKey {
+			continue
+		}
 		if !httpguts.ValidHeaderFieldName(k) {
 			return nil, fmt.Errorf("invalid HTTP header name %q", k)
 		}
 		for _, v := range vv {
 			if !httpguts.ValidHeaderFieldValue(v) {
-				return nil, fmt.Errorf("invalid HTTP header value for header %q", k)
+				return nil, fmt.Errorf("invalid HTTP header value %q for header %q", v, k)
 			}
 		}
 	}
 
 	enumerateHeaders := func(f func(name, value string)) {
-		// 8.1.2.3 Request Pseudo-Header Fields
-		// The :path pseudo-header field includes the path and query parts of the
-		// target URI (the path-absolute production and optionally a '?' character
-		// followed by the query production (see Sections 3.3 and 3.4 of
-		// [RFC3986]).
-		f(":authority", host)
-		f(":method", req.Method)
-		if req.Method != http.MethodConnect || isExtendedConnect {
-			f(":path", path)
-			f(":scheme", req.URL.Scheme)
+		// Handle pseudo-headers with order support
+		pHeaderOrder, hasPHeaderOrder := req.Header[httpcommon.PHeaderOrderKey]
+
+		if hasPHeaderOrder {
+			// Follow pseudo header order
+			for _, p := range pHeaderOrder {
+				switch p {
+				case ":authority":
+					f(":authority", host)
+				case ":method":
+					f(":method", req.Method)
+				case ":path":
+					if req.Method != http.MethodConnect || isExtendedConnect {
+						f(":path", path)
+					}
+				case ":scheme":
+					if req.Method != http.MethodConnect || isExtendedConnect {
+						f(":scheme", req.URL.Scheme)
+					}
+				case ":protocol":
+					if isExtendedConnect {
+						f(":protocol", req.Proto)
+					}
+				default:
+					continue
+				}
+			}
+		} else {
+			// Default pseudo-header order
+			f(":authority", host)
+			f(":method", req.Method)
+			if req.Method != http.MethodConnect || isExtendedConnect {
+				f(":path", path)
+				f(":scheme", req.URL.Scheme)
+			}
+			if isExtendedConnect {
+				f(":protocol", req.Proto)
+			}
 		}
-		if isExtendedConnect {
-			f(":protocol", req.Proto)
-		}
+
 		if trailers != "" {
 			f("trailer", trailers)
 		}
 
+		// Share the same deterministic order as HTTP/1 and HTTP/2.
+		kvs := httpcommon.Sorted(req.Header, httpcommon.Indices(req.Header[httpcommon.HeaderOrderKey]), nil)
+
 		var didUA bool
-		for k, vv := range req.Header {
+		for _, kv := range kvs {
+			k := kv.Key
+			vv := kv.Values
+
 			if strings.EqualFold(k, "host") || strings.EqualFold(k, "content-length") {
 				// Host is :authority, already sent.
 				// Content-Length is automatic, set below.
@@ -198,6 +234,7 @@ func (w *requestWriter) encodeHeaders(req *http.Request, addGzipHeader bool, tra
 				f(k, v)
 			}
 		}
+
 		if shouldSendReqContentLength(req.Method, contentLength) {
 			f("content-length", strconv.FormatInt(contentLength, 10))
 		}

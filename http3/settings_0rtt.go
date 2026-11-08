@@ -3,7 +3,7 @@ package http3
 import (
 	"bytes"
 
-	"github.com/quic-go/quic-go/quicvarint"
+	"github.com/enetx/quic-go/quicvarint"
 )
 
 const serverSettingsSessionTicketPrefix = "quic-go h3 settings v1"
@@ -43,7 +43,7 @@ func settingsCompatibleFor0RTT(data []byte, current *settings) bool {
 		return false
 	}
 
-	if current.MaxFieldSectionSize >= 0 && (old.MaxFieldSectionSize < 0 || old.MaxFieldSectionSize > current.MaxFieldSectionSize) {
+	if current.MaxFieldSectionSize > 0 && (old.MaxFieldSectionSize < 0 || old.MaxFieldSectionSize > current.MaxFieldSectionSize) {
 		return false
 	}
 	if old.Datagram && !current.Datagram {

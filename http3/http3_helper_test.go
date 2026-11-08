@@ -13,19 +13,18 @@ import (
 	"io"
 	"math/big"
 	"net"
-	"net/http"
 	"os"
 	"reflect"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/enetx/http"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3/qlog"
+	"github.com/enetx/quic-go/qlogwriter"
+	"github.com/enetx/quic-go/quicvarint"
 	"github.com/quic-go/qpack"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
-	"github.com/quic-go/quic-go/quicvarint"
-
 	"github.com/stretchr/testify/require"
 )
 

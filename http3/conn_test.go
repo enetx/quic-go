@@ -7,12 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
-	"github.com/quic-go/quic-go/quicvarint"
-	"github.com/quic-go/quic-go/testutils/events"
-
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3/qlog"
+	"github.com/enetx/quic-go/qlogwriter"
+	"github.com/enetx/quic-go/quicvarint"
+	"github.com/enetx/quic-go/testutils/events"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,7 +27,7 @@ func TestConnReceiveSettings(t *testing.T) {
 		MaxFieldSectionSize: 1234,
 		Datagram:            true,
 		ExtendedConnect:     true,
-		Other:               map[uint64]uint64{1337: 42},
+		Other:               orderedTestSettings(map[uint64]uint64{1337: 42}),
 	}
 	b = sf.Append(b)
 	controlStr, err := clientConn.OpenUniStream()
@@ -54,7 +53,7 @@ func TestConnReceiveSettings(t *testing.T) {
 	settings := conn.Settings()
 	require.True(t, settings.EnableDatagrams)
 	require.True(t, settings.EnableExtendedConnect)
-	require.Equal(t, map[uint64]uint64{1337: 42}, settings.Other)
+	require.Equal(t, orderedTestSettings(map[uint64]uint64{1337: 42}), settings.Other)
 
 	expectedLen, expectedPayloadLen := expectedFrameLength(t, sf)
 	require.Equal(t,
@@ -184,7 +183,7 @@ func TestConnControlStreamFailures(t *testing.T) {
 	t.Run("frame error", func(t *testing.T) {
 		testConnControlStreamFailures(t,
 			// 1337 is invalid value for the Extended CONNECT setting
-			(&settingsFrame{Other: map[uint64]uint64{settingExtendedConnect: 1337}}).Append(nil),
+			(&settingsFrame{Other: orderedTestSettings(map[uint64]uint64{settingExtendedConnect: 1337})}).Append(nil),
 			nil,
 			ErrCodeFrameError,
 		)

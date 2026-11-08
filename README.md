@@ -1,3 +1,8 @@
+Surf fork of official quic-go v0.65.0, supporting Go 1.27+. Protocol controls,
+verification limits and the update procedure are documented in
+[UPSTREAM.md](UPSTREAM.md). Browser settings and TLS templates live in Surf;
+this module has no uTLS dependency.
+
 <div align="center" style="margin-bottom: 15px;">
   <img src="./assets/quic-go-logo.png" width="700" height="auto">
 </div>
@@ -5,10 +10,9 @@
 # A QUIC implementation in pure Go
 
 
+[![Go checks](https://github.com/enetx/quic-go/actions/workflows/go.yml/badge.svg)](https://github.com/enetx/quic-go/actions/workflows/go.yml)
 [![Documentation](https://img.shields.io/badge/docs-quic--go.net-red?style=flat)](https://quic-go.net/docs/)
-[![PkgGoDev](https://pkg.go.dev/badge/github.com/quic-go/quic-go)](https://pkg.go.dev/github.com/quic-go/quic-go)
-[![Code Coverage](https://img.shields.io/codecov/c/github/quic-go/quic-go/master.svg?style=flat-square)](https://codecov.io/gh/quic-go/quic-go/)
-[![Fuzzing Status](https://oss-fuzz-build-logs.storage.googleapis.com/badges/quic-go.svg)](https://introspector.oss-fuzz.com/project-profile?project=quic-go)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/enetx/quic-go)](https://pkg.go.dev/github.com/enetx/quic-go)
 
 quic-go is an implementation of the QUIC protocol ([RFC 9000](https://datatracker.ietf.org/doc/html/rfc9000), [RFC 9001](https://datatracker.ietf.org/doc/html/rfc9001), [RFC 9002](https://datatracker.ietf.org/doc/html/rfc9002)) in Go.
 

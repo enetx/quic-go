@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/internal/testdata"
+	"github.com/enetx/http"
+	"github.com/enetx/http/httptest"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/internal/testdata"
 
 	"github.com/stretchr/testify/require"
 )

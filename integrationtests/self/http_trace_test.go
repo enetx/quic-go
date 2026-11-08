@@ -5,13 +5,13 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
-	"net/http"
-	"net/http/httptrace"
 	"net/textproto"
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go/http3"
+	"github.com/enetx/http"
+	"github.com/enetx/http/httptrace"
+	"github.com/enetx/quic-go/http3"
 	"github.com/stretchr/testify/require"
 )
 

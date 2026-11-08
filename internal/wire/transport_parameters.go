@@ -11,9 +11,10 @@ import (
 	"slices"
 	"time"
 
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/qerr"
-	"github.com/quic-go/quic-go/quicvarint"
+	"github.com/enetx/quic-go/internal/protocol"
+	"github.com/enetx/quic-go/internal/qerr"
+	"github.com/enetx/quic-go/quicvarint"
+	"github.com/enetx/quic-go/transportparams"
 )
 
 // AdditionalTransportParametersClient are additional transport parameters that will be added
@@ -65,6 +66,11 @@ type PreferredAddress struct {
 
 // TransportParameters are parameters sent to the peer during the handshake
 type TransportParameters struct {
+	// ClientLayout is an optional client-only encoding layout.
+	ClientLayout            *transportparams.Layout
+	OmitMaxUDPPayloadSize   bool
+	OmitLegacyResetStreamAt bool
+
 	InitialMaxStreamDataBidiLocal  protocol.ByteCount
 	InitialMaxStreamDataBidiRemote protocol.ByteCount
 	InitialMaxStreamDataUni        protocol.ByteCount
@@ -383,7 +389,7 @@ func (p *TransportParameters) Marshal(pers protocol.Perspective) []byte {
 	// idle_timeout
 	b = p.marshalVarintParam(b, maxIdleTimeoutParameterID, uint64(p.MaxIdleTimeout/time.Millisecond))
 	// max_udp_payload_size
-	if p.MaxUDPPayloadSize > 0 {
+	if p.MaxUDPPayloadSize > 0 && !p.OmitMaxUDPPayloadSize {
 		b = p.marshalVarintParam(b, maxUDPPayloadSizeParameterID, uint64(p.MaxUDPPayloadSize))
 	}
 	// max_ack_delay
@@ -457,8 +463,10 @@ func (p *TransportParameters) Marshal(pers protocol.Perspective) []byte {
 	if p.EnableResetStreamAt {
 		b = quicvarint.Append(b, uint64(resetStreamAtParameterID))
 		b = quicvarint.Append(b, 0)
-		b = quicvarint.Append(b, uint64(legacyResetStreamAtParameterID))
-		b = quicvarint.Append(b, 0)
+		if !p.OmitLegacyResetStreamAt {
+			b = quicvarint.Append(b, uint64(legacyResetStreamAtParameterID))
+			b = quicvarint.Append(b, 0)
+		}
 	}
 	if p.MinAckDelay != nil {
 		b = p.marshalVarintParam(b, minAckDelayParameterID, uint64(*p.MinAckDelay/time.Microsecond))
@@ -472,6 +480,9 @@ func (p *TransportParameters) Marshal(pers protocol.Perspective) []byte {
 		}
 	}
 
+	if pers == protocol.PerspectiveClient {
+		return p.ClientLayout.Apply(b)
+	}
 	return b
 }
 

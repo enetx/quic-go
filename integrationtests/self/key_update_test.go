@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/internal/handshake"
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
-	"github.com/quic-go/quic-go/testutils/events"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/internal/handshake"
+	"github.com/enetx/quic-go/internal/protocol"
+	"github.com/enetx/quic-go/qlog"
+	"github.com/enetx/quic-go/qlogwriter"
+	"github.com/enetx/quic-go/testutils/events"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"net/url"
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
+	"github.com/enetx/g"
+	"github.com/enetx/http"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3"
 
 	"github.com/stretchr/testify/require"
 )
@@ -56,6 +57,8 @@ func TestHTTPSettings(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		})
 
+		additionalSettings := g.NewMapOrd[uint64, uint64]()
+		additionalSettings.Insert(1337, 42)
 		tr := &http3.Transport{
 			TLSClientConfig: getTLSClientConfigWithoutServerName(),
 			QUICConfig: getQuicConfig(&quic.Config{
@@ -63,7 +66,7 @@ func TestHTTPSettings(t *testing.T) {
 				EnableDatagrams: true,
 			}),
 			EnableDatagrams:    true,
-			AdditionalSettings: map[uint64]uint64{1337: 42},
+			AdditionalSettings: additionalSettings,
 		}
 		addDialCallback(t, tr)
 		defer tr.Close()
@@ -88,7 +91,7 @@ func TestHTTPSettings(t *testing.T) {
 		require.NotNil(t, settings)
 		require.True(t, settings.EnableDatagrams)
 		require.False(t, settings.EnableExtendedConnect)
-		require.Equal(t, uint64(42), settings.Other[1337])
+		require.Equal(t, uint64(42), settings.Other.Get(1337).Some())
 	})
 }
 

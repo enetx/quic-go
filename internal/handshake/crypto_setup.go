@@ -9,13 +9,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/qerr"
-	"github.com/quic-go/quic-go/internal/utils"
-	"github.com/quic-go/quic-go/internal/wire"
-	"github.com/quic-go/quic-go/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
-	"github.com/quic-go/quic-go/quicvarint"
+	"github.com/enetx/quic-go/internal/protocol"
+	"github.com/enetx/quic-go/internal/qerr"
+	"github.com/enetx/quic-go/internal/utils"
+	"github.com/enetx/quic-go/internal/wire"
+	"github.com/enetx/quic-go/qlog"
+	"github.com/enetx/quic-go/qlogwriter"
+	"github.com/enetx/quic-go/quicvarint"
+	"github.com/enetx/quic-go/tlsquic"
 )
 
 type quicVersionContextKey struct{}
@@ -26,7 +27,8 @@ const clientSessionStateRevision = 5
 
 type cryptoSetup struct {
 	tlsConf *tls.Config
-	conn    *tls.QUICConn
+	conn    tlsquic.Conn
+	initErr error
 
 	events []Event
 
@@ -75,6 +77,7 @@ func NewCryptoSetupClient(
 	qlogger qlogwriter.Recorder,
 	logger utils.Logger,
 	version protocol.Version,
+	factory ...tlsquic.NewClient,
 ) CryptoSetup {
 	cs := newCryptoSetup(
 		connID,
@@ -94,6 +97,16 @@ func NewCryptoSetupClient(
 		TLSConfig:           tlsConf,
 		EnableSessionEvents: true,
 	})
+	if len(factory) > 0 && factory[0] != nil {
+		cs.conn, cs.initErr = factory[0](tlsConf.Clone())
+		if cs.initErr != nil {
+			return cs
+		}
+		if cs.conn == nil {
+			cs.initErr = errors.New("QUIC TLS client factory returned nil")
+			return cs
+		}
+	}
 	cs.conn.SetTransportParameters(cs.ourParams.Marshal(protocol.PerspectiveClient))
 
 	return cs
@@ -184,6 +197,9 @@ func (h *cryptoSetup) SetLargest1RTTAcked(pn protocol.PacketNumber) error {
 }
 
 func (h *cryptoSetup) StartHandshake(ctx context.Context) error {
+	if h.initErr != nil {
+		return wrapError(h.initErr)
+	}
 	err := h.conn.Start(context.WithValue(ctx, QUICVersionContextKey, h.version))
 	if err != nil {
 		return wrapError(err)
@@ -211,6 +227,9 @@ func (h *cryptoSetup) StartHandshake(ctx context.Context) error {
 // Close closes the crypto setup.
 // It aborts the handshake, if it is still running.
 func (h *cryptoSetup) Close() error {
+	if h.conn == nil {
+		return nil
+	}
 	return h.conn.Close()
 }
 

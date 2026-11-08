@@ -2,15 +2,15 @@ package self_test
 
 import (
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
+	"github.com/enetx/http"
+	"github.com/enetx/http/httptest"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

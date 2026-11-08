@@ -3,7 +3,7 @@ package http3
 import (
 	"fmt"
 
-	"github.com/quic-go/quic-go"
+	"github.com/enetx/quic-go"
 )
 
 type ErrCode quic.ApplicationErrorCode
@@ -28,6 +28,8 @@ const (
 	ErrCodeVersionFallback          ErrCode = 0x110
 	ErrCodeDatagramError            ErrCode = 0x33
 	ErrCodeQPACKDecompressionFailed ErrCode = 0x200
+	ErrCodeQPACKEncoderStreamError  ErrCode = 0x201
+	ErrCodeQPACKDecoderStreamError  ErrCode = 0x202
 )
 
 func (e ErrCode) String() string {
@@ -76,6 +78,10 @@ func (e ErrCode) string() string {
 		return "H3_VERSION_FALLBACK"
 	case ErrCodeDatagramError:
 		return "H3_DATAGRAM_ERROR"
+	case ErrCodeQPACKEncoderStreamError:
+		return "QPACK_ENCODER_STREAM_ERROR"
+	case ErrCodeQPACKDecoderStreamError:
+		return "QPACK_DECODER_STREAM_ERROR"
 	case ErrCodeQPACKDecompressionFailed:
 		return "QPACK_DECOMPRESSION_FAILED"
 	default:

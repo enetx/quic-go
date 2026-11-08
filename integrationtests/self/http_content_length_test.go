@@ -3,10 +3,10 @@ package self_test
 import (
 	"fmt"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
+	"github.com/enetx/http"
+	"github.com/enetx/http/httptest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

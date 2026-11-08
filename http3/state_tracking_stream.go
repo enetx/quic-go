@@ -3,10 +3,11 @@ package http3
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"sync"
 
-	"github.com/quic-go/quic-go"
+	"github.com/enetx/quic-go"
 )
 
 const streamDatagramQueueLen = 32
@@ -22,6 +23,7 @@ type stateTrackingStream struct {
 	*quic.Stream
 
 	sendDatagram func([]byte) error
+	qpackCancel  func()
 	hasData      chan struct{}
 	queue        [][]byte // TODO: use a ring buffer
 
@@ -67,7 +69,7 @@ func (s *stateTrackingStream) closeSend() {
 
 func (s *stateTrackingStream) closeReceive(e error) {
 	s.mx.Lock()
-	defer s.mx.Unlock()
+	first := s.recvErr == nil
 
 	// clear the stream the first time both the send
 	// and receive are finished
@@ -77,6 +79,10 @@ func (s *stateTrackingStream) closeReceive(e error) {
 		}
 		s.recvErr = e
 		s.signalHasDatagram()
+	}
+	s.mx.Unlock()
+	if first && e != io.EOF {
+		s.cancelQPACK()
 	}
 }
 
@@ -107,6 +113,12 @@ func (s *stateTrackingStream) TryWriteAll(b []byte) error {
 }
 
 func (s *stateTrackingStream) CancelRead(e quic.StreamErrorCode) {
+	s.mx.Lock()
+	alreadyEOF := s.recvErr == io.EOF
+	s.mx.Unlock()
+	if !alreadyEOF {
+		s.cancelQPACK()
+	}
 	s.closeReceive(&quic.StreamError{StreamID: s.StreamID(), ErrorCode: e})
 	s.Stream.CancelRead(e)
 }

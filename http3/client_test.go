@@ -6,18 +6,17 @@ import (
 	"context"
 	"io"
 	mrand "math/rand/v2"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/enetx/http"
+	"github.com/enetx/http/httptest"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3/qlog"
+	"github.com/enetx/quic-go/qlogwriter"
+	"github.com/enetx/quic-go/quicvarint"
+	"github.com/enetx/quic-go/testutils/events"
 	"github.com/quic-go/qpack"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
-	"github.com/quic-go/quic-go/quicvarint"
-	"github.com/quic-go/quic-go/testutils/events"
-
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 )
@@ -34,7 +33,7 @@ func TestClientSettings(t *testing.T) {
 func testClientSettings(t *testing.T, enableDatagrams bool, other map[uint64]uint64) {
 	tr := &Transport{
 		EnableDatagrams:    enableDatagrams,
-		AdditionalSettings: other,
+		AdditionalSettings: orderedTestSettings(other),
 	}
 
 	var eventRecorder events.Recorder
@@ -58,7 +57,7 @@ func testClientSettings(t *testing.T, enableDatagrams bool, other map[uint64]uin
 	require.IsType(t, &settingsFrame{}, f)
 	settingsFrame := f.(*settingsFrame)
 	require.Equal(t, settingsFrame.Datagram, enableDatagrams)
-	require.Equal(t, settingsFrame.Other, other)
+	require.Equal(t, orderedTestSettings(other), settingsFrame.Other)
 
 	datagramValue := int64(-1)
 	if enableDatagrams {
@@ -68,13 +67,13 @@ func testClientSettings(t *testing.T, enableDatagrams bool, other map[uint64]uin
 		[]qlogwriter.Event{
 			qlog.FrameCreated{
 				StreamID: str.StreamID(),
-				Raw:      qlog.RawInfo{Length: 10, PayloadLength: qlog.OmitLength},
+				Raw:      qlog.RawInfo{Length: len(settingsFrame.Append(nil)) + 1, PayloadLength: qlog.OmitLength},
 				Frame: qlog.Frame{
 					Frame: qlog.SettingsFrame{
-						MaxFieldSectionSize: defaultMaxResponseHeaderBytes,
+						MaxFieldSectionSize: -1,
 						Datagram:            datagramValue,
 						ExtendedConnect:     -1,
-						Other:               other,
+						Other:               map[uint64]uint64(settingsFrame.Other.Iter().Collect().Map[uint64, uint64]()),
 					},
 				},
 			},
@@ -794,7 +793,7 @@ func TestClientConnGoAwayFailures(t *testing.T) {
 	t.Run("invalid frame", func(t *testing.T) {
 		b := (&settingsFrame{}).Append(nil)
 		// 1337 is invalid value for the Extended CONNECT setting
-		b = (&settingsFrame{Other: map[uint64]uint64{settingExtendedConnect: 1337}}).Append(b)
+		b = (&settingsFrame{Other: orderedTestSettings(map[uint64]uint64{settingExtendedConnect: 1337})}).Append(b)
 		testClientConnGoAwayFailures(t, b, nil, ErrCodeFrameError)
 	})
 

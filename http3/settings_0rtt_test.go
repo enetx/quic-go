@@ -50,7 +50,7 @@ func TestSettingsCompatibleFor0RTT(t *testing.T) {
 			current: &settings{MaxFieldSectionSize: 100},
 			extra: ticket(&settings{
 				MaxFieldSectionSize: 100,
-				Other:               map[uint64]uint64{13: 37},
+				Other:               orderedTestSettings(map[uint64]uint64{13: 37}),
 			}),
 		},
 	} {

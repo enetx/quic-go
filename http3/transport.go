@@ -8,16 +8,17 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"net/http"
-	"net/http/httptrace"
 	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
 
+	"github.com/enetx/g"
+	"github.com/enetx/http"
+	httpcommon "github.com/enetx/http/headerorder"
+	"github.com/enetx/http/httptrace"
+	"github.com/enetx/quic-go"
 	"golang.org/x/net/http/httpguts"
-
-	"github.com/quic-go/quic-go"
 )
 
 // Settings are HTTP/3 settings that apply to the underlying connection.
@@ -27,7 +28,7 @@ type Settings struct {
 	// Extended CONNECT, RFC 9220
 	EnableExtendedConnect bool
 	// Other settings, defined by the application
-	Other map[uint64]uint64
+	Other g.MapOrd[uint64, uint64]
 }
 
 // RoundTripOpt contains options for [Transport.RoundTripOpt].
@@ -84,7 +85,7 @@ type Transport struct {
 
 	// Additional HTTP/3 settings.
 	// It is invalid to specify any settings defined by RFC 9114 (HTTP/3) and RFC 9297 (HTTP Datagrams).
-	AdditionalSettings map[uint64]uint64
+	AdditionalSettings g.MapOrd[uint64, uint64]
 
 	// MaxResponseHeaderBytes specifies a limit on how many response bytes are
 	// allowed in the server's response header.
@@ -97,6 +98,10 @@ type Transport struct {
 	// decoded in the Response.Body.
 	// However, if the user explicitly requested gzip it is not automatically uncompressed.
 	DisableCompression bool
+
+	// StreamPriority optionally overrides the local scheduling priority of new
+	// request streams. Nil preserves quic-go's default scheduling.
+	StreamPriority *StreamPriority
 
 	Logger *slog.Logger
 
@@ -127,16 +132,12 @@ var (
 )
 
 func (t *Transport) init() error {
+	if err := t.validateOrderedSettings(); err != nil {
+		return err
+	}
 	if t.newClientConn == nil {
 		t.newClientConn = func(conn *quic.Conn) clientConn {
-			return newClientConn(
-				conn,
-				t.EnableDatagrams,
-				t.AdditionalSettings,
-				t.MaxResponseHeaderBytes,
-				t.DisableCompression,
-				t.Logger,
-			)
+			return t.newConfiguredClientConn(conn)
 		}
 	}
 	if t.QUICConfig == nil {
@@ -200,12 +201,15 @@ func (t *Transport) roundTripOpt(req *http.Request, opt RoundTripOpt) (*http.Res
 		return nil, fmt.Errorf("http3: invalid method %q", req.Method)
 	}
 	for k, vv := range req.Header {
+		if k == httpcommon.HeaderOrderKey || k == httpcommon.PHeaderOrderKey {
+			continue
+		}
 		if !httpguts.ValidHeaderFieldName(k) {
 			return nil, fmt.Errorf("http3: invalid http header field name %q", k)
 		}
 		for _, v := range vv {
 			if !httpguts.ValidHeaderFieldValue(v) {
-				return nil, fmt.Errorf("http3: invalid http header field value for key %q", k)
+				return nil, fmt.Errorf("http3: invalid http header field value %q for key %v", v, k)
 			}
 		}
 	}
@@ -435,14 +439,7 @@ func (t *Transport) removeClient(hostname string) {
 // Obtaining a [ClientConn] is only needed for more advanced use cases, such as
 // using Extended CONNECT for WebTransport or the various MASQUE protocols.
 func (t *Transport) NewClientConn(conn *quic.Conn) *ClientConn {
-	c := newClientConn(
-		conn,
-		t.EnableDatagrams,
-		t.AdditionalSettings,
-		t.MaxResponseHeaderBytes,
-		t.DisableCompression,
-		t.Logger,
-	)
+	c := t.newConfiguredClientConn(conn)
 	go func() {
 		for {
 			str, err := conn.AcceptUniStream(context.Background())
@@ -461,14 +458,7 @@ func (t *Transport) NewClientConn(conn *quic.Conn) *ClientConn {
 // unidirectional streams and [ClientConn.HandleBidirectionalStream] for incoming bidirectional streams.
 func (t *Transport) NewRawClientConn(conn *quic.Conn) *RawClientConn {
 	return &RawClientConn{
-		ClientConn: newClientConn(
-			conn,
-			t.EnableDatagrams,
-			t.AdditionalSettings,
-			t.MaxResponseHeaderBytes,
-			t.DisableCompression,
-			t.Logger,
-		),
+		ClientConn: t.newConfiguredClientConn(conn),
 	}
 }
 
@@ -504,19 +494,7 @@ func hostnameFromURL(url *url.URL) string {
 }
 
 func validMethod(method string) bool {
-	/*
-				     Method         = "OPTIONS"                ; Section 9.2
-		   		                    | "GET"                    ; Section 9.3
-		   		                    | "HEAD"                   ; Section 9.4
-		   		                    | "POST"                   ; Section 9.5
-		   		                    | "PUT"                    ; Section 9.6
-		   		                    | "DELETE"                 ; Section 9.7
-		   		                    | "TRACE"                  ; Section 9.8
-		   		                    | "CONNECT"                ; Section 9.9
-		   		                    | extension-method
-		   		   extension-method = token
-		   		     token          = 1*<any CHAR except CTLs or separators>
-	*/
+	// RFC 9110, section 9.1: a method is a nonempty token.
 	return len(method) > 0 && strings.IndexFunc(method, isNotToken) == -1
 }
 

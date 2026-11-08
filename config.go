@@ -4,13 +4,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/quicvarint"
+	"github.com/enetx/quic-go/internal/protocol"
+	"github.com/enetx/quic-go/quicvarint"
 )
 
 // Clone clones a Config.
 func (c *Config) Clone() *Config {
 	copy := *c
+	copy.ClientHandshake = c.ClientHandshake.Clone()
 	return &copy
 }
 
@@ -51,6 +52,9 @@ func validateConfig(config *Config) error {
 	}
 	if config.InitialPacketSize > protocol.MaxPacketBufferSize {
 		config.InitialPacketSize = protocol.MaxPacketBufferSize
+	}
+	if err := config.validateClientHandshake(); err != nil {
+		return err
 	}
 	// check that all QUIC versions are actually supported
 	for _, v := range config.Versions {
@@ -109,6 +113,7 @@ func populateConfig(config *Config) *Config {
 		maxIncomingUniStreams = 0
 	}
 	return &Config{
+		ClientHandshake:                  config.ClientHandshake.Clone(),
 		GetConfigForClient:               config.GetConfigForClient,
 		Versions:                         versions,
 		HandshakeIdleTimeout:             handshakeIdleTimeout,

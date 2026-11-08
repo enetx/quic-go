@@ -7,15 +7,16 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"net/http"
-	"net/http/httptrace"
 	"net/textproto"
 	"sync"
 	"time"
 
+	"github.com/enetx/g"
+	"github.com/enetx/http"
+	"github.com/enetx/http/httptrace"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/qlogwriter"
 	"github.com/quic-go/qpack"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/qlogwriter"
 )
 
 const (
@@ -48,14 +49,15 @@ var defaultQuicConfig = &quic.Config{
 
 // ClientConn is an HTTP/3 client doing requests to a single remote server.
 type ClientConn struct {
-	conn    *quic.Conn
-	rawConn *rawConn
+	conn                   *quic.Conn
+	rawConn                *rawConn
+	initialSettingsWritten chan struct{}
 
-	decoder *qpack.Decoder
+	decoder fieldDecoder
 
 	// Additional HTTP/3 settings.
 	// It is invalid to specify any settings defined by RFC 9114 (HTTP/3) and RFC 9297 (HTTP Datagrams).
-	additionalSettings map[uint64]uint64
+	additionalSettings g.MapOrd[uint64, uint64]
 
 	// maxResponseHeaderBytes specifies a limit on how many response bytes are
 	// allowed in the server's response header.
@@ -76,7 +78,8 @@ type ClientConn struct {
 	qlogger qlogwriter.Recorder
 	logger  *slog.Logger
 
-	requestWriter *requestWriter
+	requestWriter  *requestWriter
+	streamPriority *StreamPriority
 }
 
 var _ http.RoundTripper = &ClientConn{}
@@ -84,7 +87,7 @@ var _ http.RoundTripper = &ClientConn{}
 func newClientConn(
 	conn *quic.Conn,
 	enableDatagrams bool,
-	additionalSettings map[uint64]uint64,
+	additionalSettings g.MapOrd[uint64, uint64],
 	maxResponseHeaderBytes int,
 	disableCompression bool,
 	logger *slog.Logger,
@@ -94,13 +97,14 @@ func newClientConn(
 		qlogger = qlogTrace.AddProducer()
 	}
 	c := &ClientConn{
-		conn:               conn,
-		additionalSettings: additionalSettings,
-		disableCompression: disableCompression,
-		maxStreamID:        invalidStreamID,
-		logger:             logger,
-		qlogger:            qlogger,
-		decoder:            qpack.NewDecoder(),
+		initialSettingsWritten: make(chan struct{}),
+		conn:                   conn,
+		additionalSettings:     additionalSettings,
+		disableCompression:     disableCompression,
+		maxStreamID:            invalidStreamID,
+		logger:                 logger,
+		qlogger:                qlogger,
+		decoder:                qpack.NewDecoder(),
 	}
 	c.goAwayCtx, c.goAwayCancel = context.WithCancel(context.Background())
 	if maxResponseHeaderBytes <= 0 {
@@ -117,13 +121,11 @@ func newClientConn(
 		qlogger,
 		c.logger,
 	)
+	c.rawConn.configureQPACK(additionalSettings)
 	// send the SETTINGs frame, using 0-RTT data, if possible
 	go func() {
-		_, err := c.rawConn.openControlStream(&settingsFrame{
-			Datagram:            enableDatagrams,
-			Other:               additionalSettings,
-			MaxFieldSectionSize: int64(c.maxResponseHeaderBytes),
-		})
+		defer close(c.initialSettingsWritten)
+		_, err := c.rawConn.openControlStream(initialClientSettings(enableDatagrams, additionalSettings))
 		if err != nil {
 			if c.logger != nil {
 				c.logger.Debug("setting up connection failed", "error", err)
@@ -147,6 +149,9 @@ func (c *ClientConn) openRequestStream(
 	disableCompression bool,
 	maxHeaderBytes int,
 ) (*RequestStream, error) {
+	if err := c.waitInitialSettings(ctx); err != nil {
+		return nil, err
+	}
 	// RFC 9114 Section 5.2 prohibits opening any new request streams after GOAWAY.
 	// The stream ID only identifies requests that were already in flight and might still be processed.
 	if c.goAwayCtx.Err() != nil {
@@ -173,12 +178,14 @@ func (c *ClientConn) openRequestStream(
 		return nil, errGoAway
 	}
 
+	c.setStreamPriority(ctx, str)
 	hstr := c.rawConn.TrackStream(str)
+	decoder := bindFieldDecoder(c.decoder, c.rawConn, ctx, hstr, c.maxResponseHeaderBytes)
 	rsp := &http.Response{}
 	trace := httptrace.ContextClientTrace(ctx)
 	return newRequestStream(
 		newStream(hstr, c.rawConn, trace, func(r io.Reader, hf *headersFrame) error {
-			hdr, err := decodeTrailers(r, hf, maxHeaderBytes, c.decoder, c.qlogger, str.StreamID())
+			hdr, err := decodeTrailers(r, hf, maxHeaderBytes, decoder, c.qlogger, str.StreamID())
 			if err != nil {
 				return err
 			}
@@ -187,7 +194,7 @@ func (c *ClientConn) openRequestStream(
 		}, c.qlogger),
 		requestWriter,
 		reqDone,
-		c.decoder,
+		decoder,
 		disableCompression,
 		maxHeaderBytes,
 		rsp,

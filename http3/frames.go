@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
-	"github.com/quic-go/quic-go/quicvarint"
+	"github.com/enetx/g"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3/qlog"
+	"github.com/enetx/quic-go/qlogwriter"
+	"github.com/enetx/quic-go/quicvarint"
 )
 
 // FrameType is the frame type of a HTTP/3 frame
@@ -175,9 +175,9 @@ const (
 type settingsFrame struct {
 	MaxFieldSectionSize int64 // SETTINGS_MAX_FIELD_SECTION_SIZE, -1 if not set
 
-	Datagram        bool              // HTTP Datagrams, RFC 9297
-	ExtendedConnect bool              // Extended CONNECT, RFC 9220
-	Other           map[uint64]uint64 // all settings that we don't explicitly recognize
+	Datagram        bool                     // HTTP Datagrams, RFC 9297
+	ExtendedConnect bool                     // Extended CONNECT, RFC 9220
+	Other           g.MapOrd[uint64, uint64] // all settings that we don't explicitly recognize
 }
 
 const maxSettingsFrameSize = 8 << 10
@@ -233,13 +233,13 @@ func parseSettingsFrame(r *countingByteReader, l uint64, streamID quic.StreamID,
 			datagram = int64(val)
 			frame.Datagram = val == 1
 		default:
-			if _, ok := frame.Other[id]; ok {
+			if frame.Other.Contains(id) {
 				return nil, fmt.Errorf("duplicate setting: %d", id)
 			}
 			if frame.Other == nil {
-				frame.Other = make(map[uint64]uint64)
+				frame.Other = g.NewMapOrd[uint64, uint64]()
 			}
-			frame.Other[id] = val
+			frame.Other.Insert(id, val)
 		}
 	}
 	if qlogger != nil {
@@ -253,7 +253,7 @@ func parseSettingsFrame(r *countingByteReader, l uint64, streamID quic.StreamID,
 				MaxFieldSectionSize: frame.MaxFieldSectionSize,
 				Datagram:            datagram,
 				ExtendedConnect:     extendedConnect,
-				Other:               maps.Clone(frame.Other),
+				Other:               frame.Other.Iter().Collect().Map[uint64, uint64](),
 			}},
 		})
 	}
@@ -263,10 +263,10 @@ func parseSettingsFrame(r *countingByteReader, l uint64, streamID quic.StreamID,
 func (f *settingsFrame) Append(b []byte) []byte {
 	b = quicvarint.Append(b, 0x4)
 	var l int
-	if f.MaxFieldSectionSize >= 0 {
+	if f.MaxFieldSectionSize > 0 {
 		l += quicvarint.Len(settingMaxFieldSectionSize) + quicvarint.Len(uint64(f.MaxFieldSectionSize))
 	}
-	for id, val := range f.Other {
+	for id, val := range f.Other.Iter() {
 		l += quicvarint.Len(id) + quicvarint.Len(val)
 	}
 	if f.Datagram {
@@ -276,7 +276,7 @@ func (f *settingsFrame) Append(b []byte) []byte {
 		l += quicvarint.Len(settingExtendedConnect) + quicvarint.Len(1)
 	}
 	b = quicvarint.Append(b, uint64(l))
-	if f.MaxFieldSectionSize >= 0 {
+	if f.MaxFieldSectionSize > 0 {
 		b = quicvarint.Append(b, settingMaxFieldSectionSize)
 		b = quicvarint.Append(b, uint64(f.MaxFieldSectionSize))
 	}
@@ -288,7 +288,7 @@ func (f *settingsFrame) Append(b []byte) []byte {
 		b = quicvarint.Append(b, settingExtendedConnect)
 		b = quicvarint.Append(b, 1)
 	}
-	for id, val := range f.Other {
+	for id, val := range f.Other.Iter() {
 		b = quicvarint.Append(b, id)
 		b = quicvarint.Append(b, val)
 	}

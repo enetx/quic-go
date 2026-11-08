@@ -8,9 +8,9 @@ import (
 	"slices"
 	"strconv"
 
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/qerr"
-	"github.com/quic-go/quic-go/internal/wire"
+	"github.com/enetx/quic-go/internal/protocol"
+	"github.com/enetx/quic-go/internal/qerr"
+	"github.com/enetx/quic-go/internal/wire"
 )
 
 const disableClientHelloScramblingEnv = "QUIC_GO_DISABLE_CLIENTHELLO_SCRAMBLING"
@@ -167,8 +167,14 @@ func (s *initialCryptoStream) Write(p []byte) (int, error) {
 			s.cuts[1].end = min(start+16, s.end)
 		}
 		slices.SortFunc(s.cuts[:], func(a, b clientHelloCut) int {
+			if a.start == b.start {
+				return 0
+			}
 			if a.start == protocol.InvalidByteCount {
 				return 1
+			}
+			if b.start == protocol.InvalidByteCount {
+				return -1
 			}
 			if a.start > b.start {
 				return 1

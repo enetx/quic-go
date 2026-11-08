@@ -3,11 +3,11 @@ package self_test
 import (
 	"fmt"
 	"io"
-	"net/http"
 	"testing"
 	"testing/synctest"
 
-	"github.com/quic-go/quic-go/http3"
+	"github.com/enetx/http"
+	"github.com/enetx/quic-go/http3"
 
 	"github.com/stretchr/testify/require"
 )

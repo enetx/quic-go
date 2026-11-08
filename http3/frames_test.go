@@ -8,14 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
-	"github.com/quic-go/quic-go/quicvarint"
-	"github.com/quic-go/quic-go/testutils/events"
-
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3/qlog"
+	"github.com/enetx/quic-go/qlogwriter"
+	"github.com/enetx/quic-go/quicvarint"
+	"github.com/enetx/quic-go/testutils/events"
 	ossfuzzseeds "github.com/quic-go/go-ossfuzz-seeds"
-
 	"github.com/stretchr/testify/require"
 )
 
@@ -219,8 +217,8 @@ func TestParserSettingsFrame(t *testing.T) {
 	require.IsType(t, &settingsFrame{}, frame)
 	sf := frame.(*settingsFrame)
 	require.Len(t, sf.Other, 2)
-	require.Equal(t, uint64(37), sf.Other[uint64(13)])
-	require.Equal(t, uint64(0xbeef), sf.Other[uint64(0xdead)])
+	require.Equal(t, uint64(37), sf.Other.Get(13).Unwrap())
+	require.Equal(t, uint64(0xbeef), sf.Other.Get(0xdead).Unwrap())
 	logged := eventRecorder.Events(qlog.FrameParsed{})
 	require.Len(t, logged, 1)
 	require.Equal(t, qlog.SettingsFrame{
@@ -343,6 +341,7 @@ func testParserSettingsFrameDatagram(t *testing.T, val uint64) {
 	require.Equal(t, qlog.SettingsFrame{
 		MaxFieldSectionSize: -1,
 		Datagram:            int64(val),
+		Other:               map[uint64]uint64{},
 		ExtendedConnect:     -1,
 	}, logged[0].(qlog.FrameParsed).Frame.Frame)
 
@@ -391,6 +390,7 @@ func testParserSettingsFrameExtendedConnect(t *testing.T, val uint64) {
 		MaxFieldSectionSize: -1,
 		Datagram:            -1,
 		ExtendedConnect:     int64(val),
+		Other:               map[uint64]uint64{},
 	}, logged[0].(qlog.FrameParsed).Frame.Frame)
 
 	fp = frameParser{r: bytes.NewReader(sf.Append(nil))}
@@ -472,7 +472,7 @@ func FuzzFrameParser(f *testing.F) {
 			MaxFieldSectionSize: 1337,
 			Datagram:            true,
 			ExtendedConnect:     true,
-			Other:               map[uint64]uint64{0xdead: 0xbeef},
+			Other:               orderedTestSettings(map[uint64]uint64{0xdead: 0xbeef}),
 		},
 		&goAwayFrame{StreamID: 42},
 	}
@@ -515,7 +515,7 @@ func FuzzFrameParser(f *testing.F) {
 					t.Fatalf("SETTINGS: invalid MaxFieldSectionSize %d", f.MaxFieldSectionSize)
 				}
 				// Known settings are never stored in Other on a successful parse.
-				for id := range f.Other {
+				for id := range f.Other.Iter() {
 					switch id {
 					case settingMaxFieldSectionSize, settingExtendedConnect, settingDatagram:
 						t.Fatalf("SETTINGS: known setting id %#x leaked into Other", id)

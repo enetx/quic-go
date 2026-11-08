@@ -6,15 +6,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"net"
 	"sync"
 	"sync/atomic"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
-	"github.com/quic-go/quic-go/quicvarint"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3/qlog"
+	dynamic "github.com/enetx/quic-go/internal/qpack"
+	"github.com/enetx/quic-go/qlogwriter"
+	"github.com/enetx/quic-go/quicvarint"
 )
 
 const maxQuarterStreamID = 1<<60 - 1
@@ -26,7 +26,8 @@ const invalidStreamID = quic.StreamID(-1)
 // It provides HTTP/3 specific functionality by wrapping a quic.Conn,
 // in particular handling of unidirectional HTTP/3 streams, SETTINGS and datagrams.
 type rawConn struct {
-	conn *quic.Conn
+	conn         *quic.Conn
+	qpackDecoder *dynamic.Decoder
 
 	logger *slog.Logger
 
@@ -102,7 +103,7 @@ func (c *rawConn) openControlStream(settings *settingsFrame) (*quic.SendStream, 
 			MaxFieldSectionSize: settings.MaxFieldSectionSize,
 			Datagram:            -1,
 			ExtendedConnect:     -1,
-			Other:               maps.Clone(settings.Other),
+			Other:               settings.Other.Iter().Collect().Map[uint64, uint64](),
 		}
 		if settings.Datagram {
 			sf.Datagram = 1
@@ -124,6 +125,7 @@ func (c *rawConn) openControlStream(settings *settingsFrame) (*quic.SendStream, 
 
 func (c *rawConn) TrackStream(str *quic.Stream) *stateTrackingStream {
 	hstr := newStateTrackingStream(str, c, func(b []byte) error { return c.sendDatagram(str.StreamID(), b) })
+	hstr.qpackCancel = c.qpackCancellation(str.StreamID())
 
 	c.streamMx.Lock()
 	c.streams[str.StreamID()] = hstr
@@ -197,14 +199,20 @@ func (c *rawConn) handleUnidirectionalStream(str *quic.ReceiveStream, isServer b
 	case streamTypeQPACKEncoderStream:
 		if isFirst := c.rcvdQPACKEncoderStr.CompareAndSwap(false, true); !isFirst {
 			c.CloseWithError(quic.ApplicationErrorCode(ErrCodeStreamCreationError), "duplicate QPACK encoder stream")
+			return
 		}
-		// Our QPACK implementation doesn't use the dynamic table yet.
+		if c.qpackDecoder != nil {
+			c.handleQPACKStream(str, true)
+		}
 		return
 	case streamTypeQPACKDecoderStream:
 		if isFirst := c.rcvdQPACKDecoderStr.CompareAndSwap(false, true); !isFirst {
 			c.CloseWithError(quic.ApplicationErrorCode(ErrCodeStreamCreationError), "duplicate QPACK decoder stream")
+			return
 		}
-		// Our QPACK implementation doesn't use the dynamic table yet.
+		if c.qpackDecoder != nil {
+			c.handleQPACKStream(str, false)
+		}
 		return
 	case streamTypePushStream:
 		if isServer {

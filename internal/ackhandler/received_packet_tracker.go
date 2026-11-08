@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/quic-go/quic-go/internal/monotime"
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/utils"
-	"github.com/quic-go/quic-go/internal/wire"
+	"github.com/enetx/quic-go/internal/monotime"
+	"github.com/enetx/quic-go/internal/protocol"
+	"github.com/enetx/quic-go/internal/utils"
+	"github.com/enetx/quic-go/internal/wire"
 )
 
 const reorderingThreshold = 1
@@ -84,6 +84,7 @@ const packetsBeforeAck = 2
 // The appDataReceivedPacketTracker tracks packets received in the Application Data packet number space.
 // It waits until at least 2 packets were received before queueing an ACK, or until the max_ack_delay was reached.
 type appDataReceivedPacketTracker struct {
+	ackDelayLimit time.Duration
 	receivedPacketTracker
 
 	largestObservedRcvdTime monotime.Time
@@ -126,9 +127,9 @@ func (h *appDataReceivedPacketTracker) ReceivedPacket(pn protocol.PacketNumber, 
 	}
 	if !h.ackQueued {
 		// No ACK queued, but we'll need to acknowledge the packet after max_ack_delay.
-		h.ackAlarm = rcvTime.Add(MaxAckDelay)
+		h.ackAlarm = rcvTime.Add(h.maxAckDelay())
 		if h.logger.Debug() {
-			h.logger.Debugf("\tSetting ACK timer to max ack delay: %s", MaxAckDelay)
+			h.logger.Debugf("\tSetting ACK timer to max ack delay: %s", h.maxAckDelay())
 		}
 	}
 	return nil

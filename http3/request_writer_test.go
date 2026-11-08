@@ -3,15 +3,14 @@ package http3
 import (
 	"bytes"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
-	"github.com/quic-go/quic-go/testutils/events"
-
+	"github.com/enetx/http"
+	"github.com/enetx/http/httptest"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3/qlog"
+	"github.com/enetx/quic-go/qlogwriter"
+	"github.com/enetx/quic-go/testutils/events"
 	"github.com/stretchr/testify/require"
 )
 
@@ -100,7 +99,7 @@ func TestRequestWriterInvalidHeaderValue(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "https://quic-go.net", nil)
 	req.Header.Set("Authorization", "Bearer secret\x00")
 	err := newRequestWriter().WriteRequestHeader(&bytes.Buffer{}, req, false, 0, nil)
-	require.EqualError(t, err, `invalid HTTP header value for header "Authorization"`)
+	require.EqualError(t, err, `invalid HTTP header value "Bearer secret\x00" for header "Authorization"`)
 }
 
 func TestRequestWriterConnect(t *testing.T) {

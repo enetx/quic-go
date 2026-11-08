@@ -11,11 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/utils"
-	"github.com/quic-go/quic-go/internal/wire"
-	"github.com/quic-go/quic-go/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
+	"github.com/enetx/quic-go/internal/protocol"
+	"github.com/enetx/quic-go/internal/utils"
+	"github.com/enetx/quic-go/internal/wire"
+	"github.com/enetx/quic-go/qlog"
+	"github.com/enetx/quic-go/qlogwriter"
 )
 
 // ErrTransportClosed is returned by [Transport.Listen], [Transport.ListenEarly], [Transport.Dial],
@@ -55,6 +55,10 @@ type closePacket struct {
 // A Transport handles a single [net.PacketConn], and offers a range of configuration options
 // compared to the simple helper functions like [Listen] and [Dial] that this package provides.
 type Transport struct {
+	// ReceivePacketSize optionally increases the UDP receive limit using the
+	// existing large-buffer pool. Zero retains the upstream receive size.
+	ReceivePacketSize int
+
 	// A single [net.PacketConn] can only be handled by one Transport.
 	// Bad things will happen if passed to multiple Transports.
 	//
@@ -253,14 +257,21 @@ func (t *Transport) dial(ctx context.Context, addr net.Addr, host string, tlsCon
 	if err := validateConfig(conf); err != nil {
 		return nil, err
 	}
+	if err := t.validateReceiveLimit(conf); err != nil {
+		return nil, err
+	}
 	conf = populateConfig(conf)
 	tlsConf = tlsConf.Clone()
 	setTLSConfigServerName(tlsConf, addr, host)
+	initialPacketNumber, err := conf.initialPacketNumber()
+	if err != nil {
+		return nil, err
+	}
 	return t.doDial(ctx,
 		newSendConn(t.conn, addr, packetInfo{}, utils.DefaultLogger),
 		tlsConf,
 		conf,
-		0,
+		initialPacketNumber,
 		false,
 		use0RTT,
 		conf.Versions[0],
@@ -281,7 +292,7 @@ func (t *Transport) doDial(
 	if err != nil {
 		return nil, err
 	}
-	destConnID, err := generateConnectionIDForInitial()
+	destConnID, err := config.initialDestinationConnectionID()
 	if err != nil {
 		return nil, err
 	}
@@ -375,13 +386,16 @@ func (t *Transport) doDial(
 }
 
 func (t *Transport) init(allowZeroLengthConnIDs bool) error {
+	if err := validateReceivePacketSize(t.ReceivePacketSize); err != nil {
+		return err
+	}
 	t.initOnce.Do(func() {
 		var conn rawConn
 		if c, ok := t.Conn.(rawConn); ok {
 			conn = c
 		} else {
 			var err error
-			conn, err = wrapConn(t.Conn)
+			conn, err = wrapConn(t.Conn, t.ReceivePacketSize)
 			if err != nil {
 				t.initErr = err
 				return

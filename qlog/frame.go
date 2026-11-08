@@ -4,8 +4,8 @@ import (
 	"encoding/hex"
 	"unicode/utf8"
 
-	"github.com/quic-go/quic-go/internal/wire"
-	"github.com/quic-go/quic-go/qlogwriter/jsontext"
+	"github.com/enetx/quic-go/internal/wire"
+	"github.com/enetx/quic-go/qlogwriter/jsontext"
 )
 
 type Frame struct {

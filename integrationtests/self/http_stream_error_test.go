@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/http"
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
+	"github.com/enetx/http"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3"
 
 	"github.com/stretchr/testify/require"
 )

@@ -1,10 +1,10 @@
 package http3
 
 import (
-	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/enetx/http"
 	"github.com/stretchr/testify/require"
 )
 

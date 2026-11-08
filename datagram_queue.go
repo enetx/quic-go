@@ -4,11 +4,11 @@ import (
 	"context"
 	"sync"
 
-	"github.com/quic-go/quic-go/internal/utils"
-	"github.com/quic-go/quic-go/internal/utils/ringbuffer"
-	"github.com/quic-go/quic-go/internal/wire"
-	"github.com/quic-go/quic-go/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
+	"github.com/enetx/quic-go/internal/utils"
+	"github.com/enetx/quic-go/internal/utils/ringbuffer"
+	"github.com/enetx/quic-go/internal/wire"
+	"github.com/enetx/quic-go/qlog"
+	"github.com/enetx/quic-go/qlogwriter"
 )
 
 const (

@@ -18,3 +18,7 @@ fuzzing/*/corpus/
 **/testdata/fuzz/
 
 gomock_reflect_*/
+
+# Local Python maintenance cache
+__pycache__/
+*.py[cod]
