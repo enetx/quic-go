@@ -25,10 +25,13 @@ import (
 const bodyCopyBufferSize = 8 * 1024
 
 type requestWriter struct {
-	beforeHeaders func() error
-	mutex         sync.Mutex
-	encoder       *qpack.Encoder
-	headerBuf     *bytes.Buffer
+	beforeHeaders        func() error
+	beforeRequestHeaders func(*http.Request, quic.StreamID) error
+	greaseFrames         func(*http.Request) ([]GreaseFrame, error)
+	qpackConfig          *QPACKConfig
+	mutex                sync.Mutex
+	encoder              *qpack.Encoder
+	headerBuf            *bytes.Buffer
 }
 
 func newRequestWriter() *requestWriter {
@@ -74,8 +77,30 @@ func (w *requestWriter) writeHeaders(wr io.Writer, req *http.Request, gzip bool,
 	if err != nil {
 		return err
 	}
+	var grease []byte
+	if w.greaseFrames != nil {
+		frames, err := w.greaseFrames(req)
+		if err != nil {
+			return &RequestPreparationError{err}
+		}
+		grease, err = appendGreaseFrames(frames)
+		if err != nil {
+			return &RequestPreparationError{err}
+		}
+	}
 	if w.beforeHeaders != nil {
 		if err := w.beforeHeaders(); err != nil {
+			return &RequestPreparationError{err}
+		}
+	}
+	if w.beforeRequestHeaders != nil {
+		if err := w.beforeRequestHeaders(req, streamID); err != nil {
+			return &RequestPreparationError{err}
+		}
+	}
+	if len(grease) > 0 {
+		recordWireFrames(qlogger, streamID, grease)
+		if _, err := wr.Write(grease); err != nil {
 			return err
 		}
 	}
@@ -237,7 +262,15 @@ func (w *requestWriter) encodeHeaders(req *http.Request, addGzipHeader bool, tra
 			}
 
 			for _, v := range vv {
-				f(k, v)
+				if w.qpackConfig != nil && w.qpackConfig.SplitCookies && strings.EqualFold(k, "cookie") {
+					for _, crumb := range strings.Split(v, ";") {
+						if crumb = strings.TrimSpace(crumb); crumb != "" {
+							f(k, crumb)
+						}
+					}
+				} else {
+					f(k, v)
+				}
 			}
 		}
 
@@ -275,9 +308,13 @@ func (w *requestWriter) encodeHeaders(req *http.Request, addGzipHeader bool, tra
 	if doQlog {
 		headerFields = make([]qlog.HeaderField, 0, len(req.Header))
 	}
+	var encodeErr error
 	enumerateHeaders(func(name, value string) {
 		name = strings.ToLower(name)
-		w.encoder.WriteField(qpack.HeaderField{Name: name, Value: value})
+		if encodeErr != nil {
+			return
+		}
+		encodeErr = w.writeQPACKField(name, value)
 		if traceHeaders {
 			traceWroteHeaderField(trace, name, value)
 		}
@@ -286,7 +323,7 @@ func (w *requestWriter) encodeHeaders(req *http.Request, addGzipHeader bool, tra
 		}
 	})
 
-	return headerFields, nil
+	return headerFields, encodeErr
 }
 
 // authorityAddr returns a given authority (a host/IP, or host:port / ip:port)

@@ -52,6 +52,7 @@ type ClientConn struct {
 	conn                   *quic.Conn
 	rawConn                *rawConn
 	initialSettingsWritten chan struct{}
+	initialSettingsErr     error // published by closing initialSettingsWritten
 
 	decoder fieldDecoder
 
@@ -80,6 +81,8 @@ type ClientConn struct {
 
 	requestWriter  *requestWriter
 	streamPriority *StreamPriority
+	wireConfig     *WireConfig
+	controlWriter  *clientControlWriter
 }
 
 var _ http.RoundTripper = &ClientConn{}
@@ -91,6 +94,19 @@ func newClientConn(
 	maxResponseHeaderBytes int,
 	disableCompression bool,
 	logger *slog.Logger,
+	qpackConfig ...*QPACKConfig,
+) *ClientConn {
+	return newClientConnWithWire(conn, enableDatagrams, additionalSettings, maxResponseHeaderBytes, disableCompression, logger, nil, qpackConfig...)
+}
+
+func newClientConnWithWire(
+	conn *quic.Conn,
+	enableDatagrams bool,
+	additionalSettings g.MapOrd[uint64, uint64],
+	maxResponseHeaderBytes int,
+	disableCompression bool,
+	logger *slog.Logger,
+	wireConfig *WireConfig,
 	qpackConfig ...*QPACKConfig,
 ) *ClientConn {
 	var qlogger qlogwriter.Recorder
@@ -126,12 +142,30 @@ func newClientConn(
 		c.rawConn.clientQPACK = newClientQPACK(c.rawConn, qpackConfig[0], c.initialSettingsWritten,
 			qpackFeedbackQueueSize(additionalSettings.Get(1).UnwrapOrDefault(), additionalSettings.Get(7).UnwrapOrDefault()))
 		c.requestWriter.beforeHeaders = c.rawConn.clientQPACK.beforeHeaders
+		c.requestWriter.qpackConfig = qpackConfig[0].Clone()
 	}
+	c.configureWire(wireConfig)
+	c.requestWriter.beforeRequestHeaders = c.queuePriorityUpdate
 	c.rawConn.configureQPACK(additionalSettings)
 	// send the SETTINGs frame, using 0-RTT data, if possible
 	go func() {
-		defer close(c.initialSettingsWritten)
-		_, err := c.rawConn.openControlStream(initialClientSettings(enableDatagrams, additionalSettings))
+		defer func() {
+			close(c.initialSettingsWritten)
+			if c.initialSettingsErr != nil {
+				c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeInternalError), "invalid control GREASE frames")
+			}
+		}()
+		if c.wireConfig != nil && c.wireConfig.ControlGreaseFrames != nil {
+			frames, err := c.wireConfig.ControlGreaseFrames()
+			if err == nil {
+				c.controlWriter.initial, err = appendGreaseFrames(frames)
+			}
+			if err != nil {
+				c.initialSettingsErr = &RequestPreparationError{err}
+				return
+			}
+		}
+		stream, err := c.rawConn.openControlStream(initialClientSettings(enableDatagrams, additionalSettings))
 		if err == nil && c.rawConn.clientQPACK != nil {
 			err = c.rawConn.clientQPACK.prepare()
 		}
@@ -141,6 +175,9 @@ func newClientConn(
 			}
 			c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeInternalError), "")
 			return
+		}
+		if c.controlWriter != nil {
+			go c.controlWriter.run(stream)
 		}
 	}()
 	return c
@@ -436,6 +473,11 @@ func (c *ClientConn) doRequest(req *http.Request, str *RequestStream) (*http.Res
 	var sendingReqFailed bool
 	if err := str.sendRequestHeader(req); err != nil {
 		traceWroteRequest(trace, err)
+		if _, local := errors.AsType[*RequestPreparationError](err); local {
+			str.CancelRead(quic.StreamErrorCode(ErrCodeRequestCanceled))
+			str.CancelWrite(quic.StreamErrorCode(ErrCodeRequestCanceled))
+			return nil, err
+		}
 		if c.logger != nil {
 			c.logger.Debug("error writing request", "error", err)
 		}

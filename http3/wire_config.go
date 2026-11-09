@@ -1,0 +1,204 @@
+package http3
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"strconv"
+	"strings"
+
+	"github.com/enetx/http"
+	httpcommon "github.com/enetx/http/headerorder"
+	"github.com/enetx/quic-go"
+	"github.com/enetx/quic-go/http3/qlog"
+	"github.com/enetx/quic-go/qlogwriter"
+	"github.com/enetx/quic-go/quicvarint"
+)
+
+// GreaseFrame is an RFC 9114 reserved frame (type 0x1f*N+0x21).
+// Browser-specific types, payloads and random distributions belong to the caller.
+type GreaseFrame struct {
+	Type    uint64
+	Payload []byte
+}
+
+// RequestPreparationError reports a local frame factory or control queue failure
+// before request bytes are written. It unwraps the original cause, but should
+// not trigger protocol fallback or a retry on a different connection.
+type RequestPreparationError struct{ err error }
+
+func (e *RequestPreparationError) Error() string { return "http3: preparing request: " + e.err.Error() }
+func (e *RequestPreparationError) Unwrap() error { return e.err }
+
+// WireConfig adds optional client wire behavior. Nil preserves upstream behavior.
+// Factories may run concurrently on different connections and must not mutate
+// requests or reenter the transport. Returned payloads are copied before use.
+type WireConfig struct {
+	// ControlGreaseFrames runs once per connection, after SETTINGS.
+	ControlGreaseFrames func() ([]GreaseFrame, error)
+	// RequestGreaseFrames runs before each request's HEADERS, on its stream.
+	RequestGreaseFrames func(*http.Request) ([]GreaseFrame, error)
+	// SendPriorityUpdates sends the request's explicit Priority field on the
+	// control stream when it differs from RFC 9218's default (u=3, i=?0).
+	// It never invents a Priority header and is independent of GREASE.
+	// Recognized urgency/incremental parameters are serialized canonically.
+	SendPriorityUpdates bool
+}
+
+func (c *WireConfig) Clone() *WireConfig {
+	if c == nil {
+		return nil
+	}
+	copy := *c
+	return &copy
+}
+
+func appendGreaseFrames(frames []GreaseFrame) ([]byte, error) {
+	var out []byte
+	for _, frame := range frames {
+		if frame.Type < 0x21 || frame.Type > quicvarint.Max || (frame.Type-0x21)%0x1f != 0 {
+			return nil, fmt.Errorf("http3: invalid GREASE frame type %d", frame.Type)
+		}
+		out = quicvarint.Append(out, frame.Type)
+		out = quicvarint.Append(out, uint64(len(frame.Payload)))
+		out = append(out, frame.Payload...)
+	}
+	return out, nil
+}
+
+// A single bounded writer owns the send control stream. Backpressure on that
+// stream never blocks request HEADERS indefinitely or creates per-request goroutines.
+type clientControlWriter struct {
+	owner   *rawConn
+	queue   chan []byte
+	initial []byte
+}
+
+func (w *clientControlWriter) enqueue(data []byte) error {
+	select {
+	case <-w.owner.conn.Context().Done():
+		return context.Cause(w.owner.conn.Context())
+	default:
+	}
+	select {
+	case w.queue <- data:
+		return nil
+	default:
+		return errors.New("http3: outgoing control frame queue is full")
+	}
+}
+
+func (w *clientControlWriter) run(stream *quic.SendStream) {
+	if w.owner.qlogger != nil {
+		if !w.owner.AddQlogProducer() {
+			return
+		}
+		defer w.owner.RemoveQlogProducer()
+	}
+	write := func(data []byte) bool {
+		if len(data) == 0 {
+			return true
+		}
+		recordWireFrames(w.owner.qlogger, stream.StreamID(), data)
+		n, err := stream.Write(data)
+		if err == nil && n != len(data) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			w.owner.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "control stream write failed")
+			return false
+		}
+		return true
+	}
+	if !write(w.initial) {
+		return
+	}
+	for {
+		select {
+		case <-w.owner.conn.Context().Done():
+			return
+		case <-stream.Context().Done():
+			w.owner.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "control stream closed")
+			return
+		case data := <-w.queue:
+			if !write(data) {
+				return
+			}
+		}
+	}
+}
+
+func recordWireFrames(logger qlogwriter.Recorder, streamID quic.StreamID, data []byte) {
+	if logger == nil {
+		return
+	}
+	for len(data) > 0 {
+		kind, n, err := quicvarint.Parse(data)
+		if err != nil {
+			return
+		}
+		length, m, err := quicvarint.Parse(data[n:])
+		if err != nil || length > uint64(len(data)-n-m) {
+			return
+		}
+		size := n + m + int(length)
+		var frame any = qlog.ReservedFrame{Type: kind}
+		if kind == 0xf0700 {
+			id, k, err := quicvarint.Parse(data[n+m : size])
+			if err != nil {
+				return
+			}
+			frame = qlog.PriorityUpdateFrame{StreamID: quic.StreamID(id), PriorityFieldValue: string(data[n+m+k : size])}
+		}
+		logger.RecordEvent(qlog.FrameCreated{StreamID: streamID, Raw: qlog.RawInfo{Length: size, PayloadLength: int(length)}, Frame: qlog.Frame{Frame: frame}})
+		data = data[size:]
+	}
+}
+
+func (c *ClientConn) configureWire(config *WireConfig) {
+	if config == nil {
+		return
+	}
+	c.wireConfig = config.Clone()
+	// Install the control writer before the startup goroutine can send SETTINGS.
+	c.controlWriter = &clientControlWriter{owner: c.rawConn, queue: make(chan []byte, 64)}
+	c.requestWriter.greaseFrames = config.RequestGreaseFrames
+}
+
+func (c *ClientConn) queuePriorityUpdate(req *http.Request, id quic.StreamID) error {
+	if c.wireConfig == nil || !c.wireConfig.SendPriorityUpdates {
+		return nil
+	}
+	var values []string
+	for _, field := range httpcommon.Sorted(req.Header, httpcommon.Indices(req.Header[httpcommon.HeaderOrderKey]), nil) {
+		if strings.EqualFold(field.Key, "priority") {
+			values = append(values, field.Values...)
+		}
+	}
+	value := strings.Join(values, ", ")
+	if value == "" {
+		return nil
+	}
+	u, incremental := parsePriority(value)
+	if u == defaultPriorityUrgency && !incremental {
+		return nil
+	}
+	// Serialize the recognized RFC 9218 parameters canonically. The default
+	// urgency is omitted; "i" carries an incremental default-urgency request.
+	value = ""
+	if u != defaultPriorityUrgency {
+		value = "u=" + strconv.Itoa(int(u))
+	}
+	if incremental {
+		if value != "" {
+			value += ", "
+		}
+		value += "i"
+	}
+	payload := quicvarint.Append(nil, uint64(id))
+	payload = append(payload, value...)
+	data := quicvarint.Append(nil, 0xf0700)
+	data = quicvarint.Append(data, uint64(len(payload)))
+	return c.controlWriter.enqueue(append(data, payload...))
+}

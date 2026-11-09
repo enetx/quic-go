@@ -107,6 +107,9 @@ type Transport struct {
 	// announcements. It does not enable dynamic request encoding.
 	QPACKConfig *QPACKConfig
 
+	// WireConfig optionally controls reserved frames and request priority updates.
+	WireConfig *WireConfig
+
 	Logger *slog.Logger
 
 	mutex sync.Mutex
@@ -268,6 +271,9 @@ func (t *Transport) doRoundTripOpt(req *http.Request, opt RoundTripOpt, isRetrie
 }
 
 func canRetryRequest(err error, req *http.Request) (*http.Request, error) {
+	if _, local := errors.AsType[*RequestPreparationError](err); local {
+		return nil, err
+	}
 	// error occurred while opening the stream, we can be sure that the request wasn't sent out
 	if _, ok := errors.AsType[*errConnUnusable](err); ok {
 		return req, nil

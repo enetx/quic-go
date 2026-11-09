@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/enetx/quic-go"
 	dynamic "github.com/enetx/quic-go/internal/qpack"
 	"github.com/enetx/quic-go/quicvarint"
+	"golang.org/x/net/http/httpguts"
 )
 
 // QPACKStreamType identifies a client QPACK unidirectional stream.
@@ -28,10 +30,15 @@ const (
 	QPACKCapacityBeforeHeaders
 )
 
-// QPACKConfig controls client stream creation and capacity announcements.
+// QPACKConfig controls client streams, capacity announcements and request fields.
 // Nil preserves native behavior. It does not enable dynamic request encoding:
 // outgoing field sections still have zero Required Insert Count.
 type QPACKConfig struct {
+	// SplitCookies emits one field per nonempty cookie-pair, preserving order.
+	SplitCookies bool
+	// NeverIndex emits these lowercase field names as literals with N=1.
+	// This controls representations, not dynamic request compression.
+	NeverIndex []string
 	// StreamOrder reserves these streams after the control stream, in order,
 	// while stream credit permits. Omitted streams are opened on demand.
 	StreamOrder []QPACKStreamType
@@ -46,13 +53,14 @@ type QPACKConfig struct {
 	EncoderCapacityTiming QPACKCapacityTiming
 }
 
-// Clone snapshots the mutable stream order.
+// Clone snapshots the mutable stream order and field names.
 func (q *QPACKConfig) Clone() *QPACKConfig {
 	if q == nil {
 		return nil
 	}
 	copy := *q
 	copy.StreamOrder = slices.Clone(q.StreamOrder)
+	copy.NeverIndex = slices.Clone(q.NeverIndex)
 	return &copy
 }
 
@@ -60,6 +68,11 @@ func (q *QPACKConfig) Clone() *QPACKConfig {
 func (q *QPACKConfig) Validate() error {
 	if q == nil {
 		return nil
+	}
+	for _, name := range q.NeverIndex {
+		if name != strings.ToLower(name) || !httpguts.ValidHeaderFieldName(strings.TrimPrefix(name, ":")) {
+			return fmt.Errorf("http3: invalid QPACK never-index name %q", name)
+		}
 	}
 	seen := make(map[QPACKStreamType]bool, 2)
 	for _, typ := range q.StreamOrder {

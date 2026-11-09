@@ -27,7 +27,7 @@ type qpackStartupPair struct {
 	streams        chan qpackStartupStream
 }
 
-func newQPACKStartupPair(t *testing.T, config *http3.QPACKConfig, serverConfig *quic.Config) *qpackStartupPair {
+func newQPACKStartupPair(t *testing.T, config *http3.QPACKConfig, serverConfig *quic.Config, wire ...*http3.WireConfig) *qpackStartupPair {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	t.Cleanup(cancel)
@@ -48,6 +48,9 @@ func newQPACKStartupPair(t *testing.T, config *http3.QPACKConfig, serverConfig *
 	settings.Insert(1, 256)
 	settings.Insert(7, 4)
 	tr := &http3.Transport{AdditionalSettings: settings, QPACKConfig: config}
+	if len(wire) > 0 {
+		tr.WireConfig = wire[0]
+	}
 	return &qpackStartupPair{ctx: ctx, client: client, server: server, h3: tr.NewClientConn(client), streams: make(chan qpackStartupStream, 4)}
 }
 

@@ -13,8 +13,15 @@ func (c *ClientConn) waitInitialSettings(ctx context.Context) error {
 	case <-ctx.Done():
 		return context.Cause(ctx)
 	case <-c.conn.Context().Done():
+		select {
+		case <-c.initialSettingsWritten:
+			if c.initialSettingsErr != nil {
+				return c.initialSettingsErr
+			}
+		default:
+		}
 		return context.Cause(c.conn.Context())
 	case <-c.initialSettingsWritten:
-		return nil
+		return c.initialSettingsErr
 	}
 }

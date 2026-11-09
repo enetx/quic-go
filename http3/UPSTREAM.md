@@ -48,6 +48,30 @@ its observable order without cached mutable state or a global lock.
 
 ## Surf API usage
 
+Optional `WireConfig` supplies reserved control/request frame factories and
+independent initial `PRIORITY_UPDATE` emission from explicit Priority headers.
+Control frames use one bounded writer; a blocked control stream cannot stall
+request header preparation indefinitely. Local factory errors return immediately
+without waiting for a peer response. Closed critical streams close the connection.
+Qlog records the added frames without changing their bytes.
+
+The shutdown integration tests wait for handler admission before initiating
+graceful shutdown. Deadline tests assert minimum lifetime and bound completion
+with a client timeout, instead of treating TLS startup and scheduler latency as
+part of a 25ms shutdown timing tolerance. Preserve this synchronization when
+merging upstream tests.
+
+`QPACKConfig.SplitCookies` and `NeverIndex` control request field representations.
+The official static QPACK encoder is retained: the adapter only changes the N bit
+or expands an exact static reference into a literal name reference. No new QPACK
+or TLS fork is required. Outgoing dynamic compression is still not implemented.
+All browser values, random distributions and policy selection remain in Surf.
+
+`tests/http3/wire_config_test.go` covers independent GREASE/priority settings,
+real stream IDs across requests, bounded queues, startup errors and critical-stream
+closure. Private encoding tests cover all static N-bit forms, cookie order, trace
+parity and request factory failures. Preserve these alongside QPACK startup tests.
+
 Surf uses `Transport` with `TLSClientConfig`, `QUICConfig`, `AdditionalSettings`,
 `MaxResponseHeaderBytes`, optional `QPACKConfig` and `Dial`, plus `RoundTrip`, `CloseIdleConnections` and
 `Close`. Its tests also use `Server`, `Serve` and `Close`.
