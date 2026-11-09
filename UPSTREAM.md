@@ -36,6 +36,7 @@ Advertising an extension does not implement it.
 | Client controls, per-attempt factories, receive windows, datagram/CID/ACK limits, Initial ID/number | `client_handshake.go` | `interface.go`, `config.go`, `connection.go`, `transport.go` |
 | UDP receive size (including the omitted protocol default) | `packet_receive_size*.go` | `sys_conn*.go`, `transport.go`, one receive-only pool branch in `buffer_pool.go` |
 | ACK scheduling and active CID limits | `internal/ackhandler/receive_config.go`, client controls | one tracker field/alarm hook and the manager limit hook |
+| Optional client receive ACK policy | `ack_policy.go`, `internal/ackhandler/ack_policy.go` | one Application Data tracker branch and client setup; native and server defaults retained |
 | Dynamic QPACK receive tables and bounded feedback | `internal/qpack/`, `http3/qpack.go`, `read_stream_wait.go` | HTTP/3 stream/connection decoder adapters |
 | Optional QPACK stream order, type timing and encoder capacity announcements | `http3/qpack_client.go` | one transport option, client setup, peer SETTINGS and request header/trailer hooks |
 | Ordered/additional client parameters and external GREASE | `transportparams/` | one field and return adapter in `internal/wire/transport_parameters.go` |
@@ -139,3 +140,12 @@ has no receiver implementation and its newer last-field semantics differ.
 ACK ratio/frequency, packet scheduling/coalescing, congestion/loss behavior,
 resource-specific priority policy and dynamic outbound QPACK still differ from
 browser engines. Browser defaults and workaround decisions belong in Surf.
+
+Client receive ACK policy is now configurable: initial/decimated packet thresholds,
+transition by packet-number span, RTT-scaled delay and floor, fixed earliest deadline,
+gap-window/immediate reordering and ECN response. Browser policy remains in Surf.
+The native tracker branch and Initial/Handshake spaces are preserved. Policy is
+cloned per configuration and connection. This does not implement ACK_FREQUENCY,
+its legacy wire parameter, congestion control, packet pacing or version switching.
+Deterministic `internal/ackhandler/ack_policy_test.go` cases cover boundary numbers,
+non-eliciting packets, timer expiry, real RTT samples, gaps, ECN and snapshots.

@@ -40,6 +40,8 @@ type ClientHandshake struct {
 	// MaxAckDelay sets the acknowledgment scheduling bound.
 	// The protocol default is omitted automatically by the transport codec.
 	MaxAckDelay time.Duration
+	// AckPolicy controls local Application Data ACK scheduling. Nil keeps native behavior.
+	AckPolicy *AckPolicy
 
 	// DisableClientHelloScrambling disables upstream SNI/ECH CRYPTO fragmentation.
 	DisableClientHelloScrambling bool
@@ -62,6 +64,7 @@ func (h *ClientHandshake) Clone() *ClientHandshake {
 		return nil
 	}
 	c := *h
+	c.AckPolicy = h.AckPolicy.Clone()
 	if h.StreamReceiveWindows != nil {
 		w := *h.StreamReceiveWindows
 		c.StreamReceiveWindows = &w
@@ -82,6 +85,9 @@ func (c *Config) validateClientHandshake() error {
 	}
 	if h.MaxAckDelay != 0 && (h.MaxAckDelay < time.Millisecond || h.MaxAckDelay > protocol.MaxMaxAckDelay || h.MaxAckDelay%time.Millisecond != 0) {
 		return fmt.Errorf("max ACK delay must be a whole number of milliseconds within the protocol range")
+	}
+	if err := h.AckPolicy.Validate(h.MaxAckDelay); err != nil {
+		return err
 	}
 	if h.OmitMaxUDPPayloadSize && h.MaxUDPPayloadSize != 0 && h.MaxUDPPayloadSize != MaxUDPReceivePacketSize {
 		return fmt.Errorf("omitted UDP payload size must use protocol default")
@@ -133,6 +139,7 @@ func (c *Conn) configureClientParameters(p *wire.TransportParameters) {
 		p.MaxAckDelay = h.MaxAckDelay
 		c.receivedPacketHandler.SetMaxAckDelay(h.MaxAckDelay)
 	}
+	c.receivedPacketHandler.SetAckPolicy(h.AckPolicy, c.rttStats)
 	if w := h.StreamReceiveWindows; w != nil {
 		p.InitialMaxStreamDataBidiLocal = protocol.ByteCount(w.BidiLocal)
 		p.InitialMaxStreamDataBidiRemote = protocol.ByteCount(w.BidiRemote)
