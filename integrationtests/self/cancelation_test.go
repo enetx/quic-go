@@ -273,7 +273,9 @@ func testStreamCancellation(
 		}(str)
 	}
 
-	timeout := time.After(time.Second)
+	completionTimer := time.NewTimer(scaleDuration(5 * time.Second))
+	defer completionTimer.Stop()
+	timeout := completionTimer.C
 	var clientErrs, serverErrs int
 	for range numStreams {
 		select {

@@ -53,6 +53,9 @@ ordered maps. `hkdf_test.go` uses fixed Expand-Label vectors instead of private
 crypto/tls linknames rejected by Go 1.27. The config-field audit includes the new
 optional field. Keep upstream tests with their source packages when private
 access is required; public extension tests live under `tests/`.
+Malformed QPACK peers wait for a request before injecting an error, avoiding a
+legitimate pre-request transport retry. Stream cancellation completion waits
+use the integration suite's time scale and retain all cancellation assertions.
 
 ## Audit and update
 

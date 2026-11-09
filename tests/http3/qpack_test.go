@@ -307,6 +307,13 @@ func TestDynamicQPACKConnectionErrors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			url, _ := qpackRawPeer(t, func(ctx context.Context, conn *quic.Conn, _ chan<- qpackFeedback) error {
+				// Wait until the request exists before injecting a connection
+				// error. Failing during OpenRequestStream legitimately permits
+				// a transport retry, but this peer accepts only one connection.
+				request, err := conn.AcceptStream(ctx)
+				if err != nil {
+					return err
+				}
 				uni, err := conn.OpenUniStream()
 				if err != nil {
 					return err
@@ -320,11 +327,7 @@ func TestDynamicQPACKConnectionErrors(t *testing.T) {
 					return uni.Close()
 				}
 				if tc.block != nil {
-					stream, err := conn.AcceptStream(ctx)
-					if err != nil {
-						return err
-					}
-					return writeFrameQPACK(stream, 1, tc.block)
+					return writeFrameQPACK(request, 1, tc.block)
 				}
 				return nil
 			})
