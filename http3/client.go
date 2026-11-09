@@ -91,6 +91,7 @@ func newClientConn(
 	maxResponseHeaderBytes int,
 	disableCompression bool,
 	logger *slog.Logger,
+	qpackConfig ...*QPACKConfig,
 ) *ClientConn {
 	var qlogger qlogwriter.Recorder
 	if qlogTrace := conn.QlogTrace(); qlogTrace != nil {
@@ -121,11 +122,19 @@ func newClientConn(
 		qlogger,
 		c.logger,
 	)
+	if len(qpackConfig) > 0 && qpackConfig[0] != nil {
+		c.rawConn.clientQPACK = newClientQPACK(c.rawConn, qpackConfig[0], c.initialSettingsWritten,
+			qpackFeedbackQueueSize(additionalSettings.Get(1).UnwrapOrDefault(), additionalSettings.Get(7).UnwrapOrDefault()))
+		c.requestWriter.beforeHeaders = c.rawConn.clientQPACK.beforeHeaders
+	}
 	c.rawConn.configureQPACK(additionalSettings)
 	// send the SETTINGs frame, using 0-RTT data, if possible
 	go func() {
 		defer close(c.initialSettingsWritten)
 		_, err := c.rawConn.openControlStream(initialClientSettings(enableDatagrams, additionalSettings))
+		if err == nil && c.rawConn.clientQPACK != nil {
+			err = c.rawConn.clientQPACK.prepare()
+		}
 		if err != nil {
 			if c.logger != nil {
 				c.logger.Debug("setting up connection failed", "error", err)

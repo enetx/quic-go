@@ -37,6 +37,7 @@ Advertising an extension does not implement it.
 | UDP receive size (including the omitted protocol default) | `packet_receive_size*.go` | `sys_conn*.go`, `transport.go`, one receive-only pool branch in `buffer_pool.go` |
 | ACK scheduling and active CID limits | `internal/ackhandler/receive_config.go`, client controls | one tracker field/alarm hook and the manager limit hook |
 | Dynamic QPACK receive tables and bounded feedback | `internal/qpack/`, `http3/qpack.go`, `read_stream_wait.go` | HTTP/3 stream/connection decoder adapters |
+| Optional QPACK stream order, type timing and encoder capacity announcements | `http3/qpack_client.go` | one transport option, client setup, peer SETTINGS and request header/trailer hooks |
 | Ordered/additional client parameters and external GREASE | `transportparams/` | one field and return adapter in `internal/wire/transport_parameters.go` |
 | External TLS client | `tlsquic/` | client-only factory and error propagation in `internal/handshake/crypto_setup.go` |
 | Initial SETTINGS before request writes | `http3/client_settings.go` | one readiness channel and two hooks in `http3/client.go`; packet-order regression |
@@ -107,6 +108,19 @@ errors retain native QUIC semantics. Zero capacity keeps the upstream static pat
 RFC Appendix B vectors, fragmented instructions, table eviction/wrap, blocked
 streams, errors, cancellation and real HTTP/3 client/server exchanges are tested.
 Outbound encoding remains static: this is not a browser QPACK indexing policy.
+
+`http3.QPACKConfig` optionally reserves encoder/decoder streams in application
+order, sends their types eagerly or with their first instruction, and queues an
+encoder capacity announcement after SETTINGS or with the next HEADERS block.
+The value never exceeds the peer's limit or the configured local budget; absent
+or zero peer capacity produces no instruction. One writer per critical stream
+preserves instruction order and respects flow control without blocking request
+headers or the control parser. Feedback queues remain bounded. Nil configuration
+retains native behavior, and server behavior is unchanged. Browser values and
+mode selection belong in Surf; the fork contains no browser detection or sleeps.
+The protocol matrix, reserved IDs, lazy type bytes, capacity bounds, snapshots,
+limited stream credit, critical-stream STOP_SENDING and dynamic response feedback
+are tested in `tests/http3/qpack_client_test.go`.
 
 Surf now owns independent Chromium 156 / Firefox 159 QUIC ClientHello fixtures.
 Its tests decrypt Initial packets independently and compare TLS, ordered SETTINGS,

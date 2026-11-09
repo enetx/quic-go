@@ -49,7 +49,7 @@ its observable order without cached mutable state or a global lock.
 ## Surf API usage
 
 Surf uses `Transport` with `TLSClientConfig`, `QUICConfig`, `AdditionalSettings`,
-`MaxResponseHeaderBytes` and `Dial`, plus `RoundTrip`, `CloseIdleConnections` and
+`MaxResponseHeaderBytes`, optional `QPACKConfig` and `Dial`, plus `RoundTrip`, `CloseIdleConnections` and
 `Close`. Its tests also use `Server`, `Serve` and `Close`.
 
 Surf does not use capsule or `HTTPStreamer` APIs. The old `ParseCapsule` API was
@@ -74,9 +74,12 @@ The fork follows the current `NewCapsuleParser` / `CapsuleReader` API,
   receive tables, all field representations, blocking, eviction, feedback,
   cancellation/deadlines, bounded decoding and real client/server requests.
   Outbound encoding remains the official static encoder.
+- `../tests/http3/qpack_client_test.go`: configurable stream reservation order,
+  eager/lazy type bytes, immediate/deferred capacity announcements, zero/omitted
+  peer limits, backpressure, immutable snapshots and critical stream errors.
 
 Run validation from the parent QUIC module, then from the sibling `surf` module
-using its local replacement:
+against the published version, or using a temporary Go workspace during development:
 
 ```sh
 go test -race ./...

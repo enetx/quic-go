@@ -103,6 +103,10 @@ type Transport struct {
 	// request streams. Nil preserves quic-go's default scheduling.
 	StreamPriority *StreamPriority
 
+	// QPACKConfig optionally controls client QPACK stream creation and capacity
+	// announcements. It does not enable dynamic request encoding.
+	QPACKConfig *QPACKConfig
+
 	Logger *slog.Logger
 
 	mutex sync.Mutex
@@ -132,6 +136,9 @@ var (
 )
 
 func (t *Transport) init() error {
+	if err := t.QPACKConfig.Validate(); err != nil {
+		return err
+	}
 	if err := t.validateOrderedSettings(); err != nil {
 		return err
 	}

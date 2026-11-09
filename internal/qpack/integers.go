@@ -14,6 +14,11 @@ import (
 
 const maxInt = uint64(1<<62 - 1)
 
+// AppendEncoderCapacity appends an RFC 9204 Set Dynamic Table Capacity instruction.
+func AppendEncoderCapacity(dst []byte, capacity uint64) []byte {
+	return appendInt(dst, 5, 0x20, capacity)
+}
+
 var ErrDecompression = errors.New("QPACK decompression failed")
 var ErrEncoderStream = errors.New("QPACK encoder stream error")
 var ErrFieldSectionTooLarge = errors.New("QPACK decoded field section exceeds limit")

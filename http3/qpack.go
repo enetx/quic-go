@@ -18,6 +18,10 @@ type fieldDecoder interface{ Decode([]byte) qpack.DecodeFunc }
 
 var errQPACKFeedbackBacklog = errors.New("http3: QPACK feedback backlog exceeded")
 
+func qpackFeedbackQueueSize(capacity, blocked uint64) int {
+	return int(min(uint64(65536), max(uint64(32), capacity/32+min(blocked, uint64(65536)))))
+}
+
 // Enable decoding exactly to the capacity and blocking allowance advertised by
 // the application. A zero capacity retains the upstream static fast path.
 func (c *rawConn) configureQPACK(settings g.MapOrd[uint64, uint64]) {
@@ -28,20 +32,25 @@ func (c *rawConn) configureQPACK(settings g.MapOrd[uint64, uint64]) {
 	blocked := settings.Get(7).UnwrapOrDefault()
 	// Each instruction is at most ten bytes. Bound queued feedback independently
 	// from application concurrency and from the peer's ability to read its stream.
-	queueSize := min(uint64(65536), max(uint64(32), capacity/32+min(blocked, uint64(65536))))
-	feedback := make(chan []byte, int(queueSize))
-	c.qpackDecoder = dynamic.NewDecoder(capacity, blocked, func(data []byte) error {
-		select {
-		case feedback <- data:
-			return nil
-		case <-c.conn.Context().Done():
-			return context.Cause(c.conn.Context())
-		default:
-			return errQPACKFeedbackBacklog
+	var emit func([]byte) error
+	if c.clientQPACK != nil {
+		emit = c.clientQPACK.decoder.enqueue
+	} else {
+		feedback := make(chan []byte, qpackFeedbackQueueSize(capacity, blocked))
+		emit = func(data []byte) error {
+			select {
+			case feedback <- data:
+				return nil
+			case <-c.conn.Context().Done():
+				return context.Cause(c.conn.Context())
+			default:
+				return errQPACKFeedbackBacklog
+			}
 		}
-	})
+		go c.writeQPACKFeedback(feedback)
+	}
+	c.qpackDecoder = dynamic.NewDecoder(capacity, blocked, emit)
 	context.AfterFunc(c.conn.Context(), func() { c.qpackDecoder.Close(context.Cause(c.conn.Context())) })
-	go c.writeQPACKFeedback(feedback)
 }
 func (c *rawConn) writeQPACKFeedback(feedback <-chan []byte) {
 	var stream *quic.SendStream

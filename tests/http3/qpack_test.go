@@ -170,6 +170,10 @@ func requestQPACK(t *testing.T, tr *http3.Transport, url string) (*http.Response
 	return tr.RoundTrip(req)
 }
 func TestDynamicQPACKResponsesAndTrailers(t *testing.T) {
+	testDynamicQPACKResponsesAndTrailers(t, nil)
+}
+
+func testDynamicQPACKResponsesAndTrailers(t *testing.T, config *http3.QPACKConfig) {
 	var connections atomic.Int32
 	url, feedback := qpackRawPeer(t, func(ctx context.Context, conn *quic.Conn, _ chan<- qpackFeedback) error {
 		connections.Add(1)
@@ -211,6 +215,7 @@ func TestDynamicQPACKResponsesAndTrailers(t *testing.T) {
 		return nil
 	})
 	tr := qpackTransport(t, 256, 4, 4096)
+	tr.QPACKConfig = config
 	for i := 0; i < 2; i++ {
 		response, err := requestQPACK(t, tr, url)
 		require.NoError(t, err)

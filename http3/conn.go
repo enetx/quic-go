@@ -28,6 +28,7 @@ const invalidStreamID = quic.StreamID(-1)
 type rawConn struct {
 	conn         *quic.Conn
 	qpackDecoder *dynamic.Decoder
+	clientQPACK  *clientQPACK
 
 	logger *slog.Logger
 
@@ -210,7 +211,7 @@ func (c *rawConn) handleUnidirectionalStream(str *quic.ReceiveStream, isServer b
 			c.CloseWithError(quic.ApplicationErrorCode(ErrCodeStreamCreationError), "duplicate QPACK decoder stream")
 			return
 		}
-		if c.qpackDecoder != nil {
+		if c.qpackDecoder != nil || c.clientQPACK != nil {
 			c.handleQPACKStream(str, false)
 		}
 		return
@@ -260,6 +261,12 @@ func (c *rawConn) handleControlStream(str *quic.ReceiveStream) {
 		EnableDatagrams:       sf.Datagram,
 		EnableExtendedConnect: sf.ExtendedConnect,
 		Other:                 sf.Other,
+	}
+	if c.clientQPACK != nil {
+		if err := c.clientQPACK.onSettings(sf.Other.Get(1).UnwrapOrDefault()); err != nil {
+			c.CloseWithError(quic.ApplicationErrorCode(ErrCodeExcessiveLoad), err.Error())
+			return
+		}
 	}
 	close(c.receivedSettings)
 	if sf.Datagram {

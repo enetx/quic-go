@@ -41,7 +41,7 @@ func (c *ClientConn) setStreamPriority(ctx context.Context, stream *quic.Stream)
 
 func (t *Transport) newConfiguredClientConn(conn *quic.Conn) *ClientConn {
 	c := newClientConn(conn, t.EnableDatagrams, t.AdditionalSettings,
-		t.MaxResponseHeaderBytes, t.DisableCompression, t.Logger)
+		t.MaxResponseHeaderBytes, t.DisableCompression, t.Logger, t.QPACKConfig)
 	if t.StreamPriority != nil {
 		priority := *t.StreamPriority
 		c.streamPriority = &priority

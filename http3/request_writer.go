@@ -25,9 +25,10 @@ import (
 const bodyCopyBufferSize = 8 * 1024
 
 type requestWriter struct {
-	mutex     sync.Mutex
-	encoder   *qpack.Encoder
-	headerBuf *bytes.Buffer
+	beforeHeaders func() error
+	mutex         sync.Mutex
+	encoder       *qpack.Encoder
+	headerBuf     *bytes.Buffer
 }
 
 func newRequestWriter() *requestWriter {
@@ -72,6 +73,11 @@ func (w *requestWriter) writeHeaders(wr io.Writer, req *http.Request, gzip bool,
 	headerFields, err := w.encodeHeaders(req, gzip, trailers, actualContentLength(req), qlogger != nil)
 	if err != nil {
 		return err
+	}
+	if w.beforeHeaders != nil {
+		if err := w.beforeHeaders(); err != nil {
+			return err
+		}
 	}
 
 	b := make([]byte, 0, 128)
@@ -356,6 +362,11 @@ func shouldSendReqContentLength(method string, contentLength int64) bool {
 // WriteRequestTrailer writes HTTP trailers to the stream.
 // It should be called after the request body has been fully written.
 func (w *requestWriter) WriteRequestTrailer(wr io.Writer, req *http.Request, streamID quic.StreamID, qlogger qlogwriter.Recorder) error {
+	if w.beforeHeaders != nil {
+		if err := w.beforeHeaders(); err != nil {
+			return err
+		}
+	}
 	_, err := writeTrailers(wr, req.Trailer, streamID, qlogger)
 	return err
 }
