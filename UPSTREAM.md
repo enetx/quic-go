@@ -321,3 +321,16 @@ The small constructor extension and sent-packet metrics/timer methods are the
 only congestion/recovery hooks. Tests cover independent wire bytes, real negotiated
 and unnegotiated connections, invalid policies, delayed feedback, sequence
 exhaustion, packet budgets, PTO rearming, migration and non-resumption of capability.
+
+## HTTP/3 connection preparation
+
+`http3/transport_preconnect.go` adds `Transport.Preconnect(ctx, hostPort)` using
+the transport's existing dial coalescing, client factory, SETTINGS setup and pool.
+It waits for a verified handshake, including when the underlying dial uses early
+data, without sending a request. Failed or canceled preparation removes/closes an
+attempt only when no other pool user holds it. A shared dial survives cancellation
+of one waiting caller. Successful preparation leaves the connection in the normal
+pool; idle cleanup and Close retain ownership. Source files of the upstream
+transport are unchanged. Tests cover real HTTP/3 reuse and shared cancellation.
+
+Protocol competition, timers, browser policy and body ownership remain in Surf.
