@@ -132,7 +132,7 @@ The protocol matrix, reserved IDs, lazy type bytes, capacity bounds, snapshots,
 limited stream credit, critical-stream STOP_SENDING and dynamic response feedback
 are tested in `tests/http3/qpack_client_test.go`.
 
-Surf now owns independent Chromium 156 / Firefox 159 QUIC ClientHello fixtures.
+Surf now owns independent Chromium 156 / Firefox 160 QUIC ClientHello fixtures.
 Its tests decrypt Initial packets independently and compare TLS, ordered SETTINGS,
 headers and supported transport parameters. Manual warmed requests to the external
 HTTP/3 endpoint pass, including the Firefox response that previously exposed the
@@ -246,19 +246,25 @@ HTTP/3 also accepts a per-connection `WireConfig.SettingsGrease` factory. Reserv
 identifier validation and ordered snapshotting are isolated in
 `http3/settings_grease.go`; browser distributions remain outside the engine.
 
-## Packet-number space assessment
+## Optional packet-number spaces
 
-Encoded packet-number length is configurable; packet-number allocation remains
-native. Splitting the generator into Initial, Handshake and application counters
-alone is unsafe: `sent_packet_history.go` requires globally increasing numbers,
-and the shared recovery history, skipped-number handling and handshake-number
-lists rely on them. Cubic recovery also compares `largestSentPacketNumber`,
-`largestAckedPacketNumber` and `largestSentAtLastCutback` across sends.
+`ClientHandshake.SeparatePacketNumberSpaces` keeps wire generators and histories
+for Initial, Handshake and Application Data independently. Only Initial receives
+the configured starting number; the other spaces start at zero.
+`DisablePacketNumberSkipping` suppresses random and PTO-induced Application Data
+gaps; the default preserves native skipping and skipped-ACK rejection. 0-RTT and 1-RTT
+share the Application Data space. The default remains the native shared counter.
 
-A separate change would need per-space wire-number histories and a globally
-ordered internal transmission identifier for congestion bookkeeping, plus tests
-for Retry, rejected 0-RTT, key disposal, PTO, loss/reordering and migration probes.
-No partial counter split or forced wire truncation is included in this release.
+The isolated `internal/ackhandler/packet_number_spaces.go` selects histories.
+`packet.CongestionNumber` is a separate monotonic transmission sequence, used
+only for congestion/recovery callbacks; qlog, ACKs, ECN and retransmission
+bookkeeping retain wire numbers. Lost-packet entries preserve congestion IDs
+for later spurious-loss reports. Counts across histories still enforce native
+packet-storage limits. Retry and migration do not reset wire generators.
+Tests cover overlapping numbers, ACK isolation, unsent/skipped ACK rejection,
+0-RTT rejection, Retry, key disposal, loss/undo and migration. Surf's Chromium
+profile deliberately keeps shared allocation; its Firefox profile enables the
+independent spaces after verification of the respective browser sources.
 
 ## Legacy ACK_FREQUENCY receive mode
 
@@ -351,9 +357,8 @@ and conversion after the floating-point addition. The upstream Reno-friendly tes
 helper is adjusted to that corrected rounding; independent C++ vectors validate it.
 Migration recreates the configured controller; timeout resets its transient state.
 Client options are ignored by server constructors. Defaults and server behavior
-remain unchanged. Pacing, PRR, persistent-congestion handling, recovery scheduling
-and browser experiments are separate work; these selectors do not establish full
-browser recovery parity. The source-derived suites execute 1120 original Neqo and
+retain their native defaults. Optional scheduling and recovery controls are
+described below; these mechanisms do not establish full browser recovery parity. The source-derived suites execute 1120 original Neqo and
 540 original QUICHE controller vectors; their provenance and runners are in
 `internal/congestion/testdata`. They are not browser packet captures.
 
@@ -397,3 +402,34 @@ independent implementation of selection. Additional manual HTTP/3 interoperabili
 checks use unmodified official aioquic 1.3.0, with private test certificates trusted
 by the Go clients, covering both directions, Retry and accepted original-version
 0-RTT across a switch. Surf preserves the sanitized reference results separately.
+
+## Optional send scheduling and recovery
+
+`ClientHandshake.MaxCongestionWindowPackets` retains the native ceiling at zero,
+sets an explicit segment ceiling when positive, and removes that fixed ceiling
+at -1. Accounting segment and path MTU remain independent. Integer operations
+and packet-history limits still bound the engine; no memory limits are disabled.
+
+`PacingConfig` selects a leaky bucket with signed debt or scheduled pacing with
+initial/idle and lumpy bursts. Applications supply gains, burst sizes, bandwidth
+threshold and granularity. `ProportionalRateReduction` enables RFC 6937;
+`RecoveryBurstPackets` supplies a bounded recovery allowance.
+`PersistentCongestionThreshold` requires a contiguous loss interval bounded by
+ack-eliciting packets after the first RTT sample; a PTO expiration alone never
+collapses the window. Application-limited notifications from empty packet packs
+stop the scheduled pacer from accumulating credit during application pauses.
+
+The code is isolated in `internal/congestion/pacing_policy.go`, `recovery.go`,
+`internal/ackhandler/persistent_congestion.go` and `client_send_config.go`. The
+connection packing path has two optional notification hooks.
+`ClientSendConfig` keeps PN/loss bookkeeping separate from congestion arithmetic.
+No browser presets, uTLS dependency, DNS resolver or browser sleeps enter this fork.
+Browser policy and connection discovery remain in Surf.
+
+In addition to CUBIC reference fixtures, tests execute 120 pacing rows generated
+from unmodified Firefox 160 Neqo `pace.rs`, and 40 PRR states (200 allowance
+comparisons) from unmodified pinned QUICHE source/header. Go tests need neither
+Rust nor C++; reproducible developer runners and hashes are in
+`internal/congestion/testdata/README.md`. Surf additionally verifies complete
+bidirectional transfers under deterministic packet loss with both profiles.
+These are source and transport checks, not proof of identical browser NIC timing.

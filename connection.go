@@ -474,7 +474,7 @@ var newClientConnection = func(
 		s.perspective,
 		s.qlogger,
 		s.logger,
-		s.config.congestionControlConfig(),
+		s.config.clientSendConfig(),
 	)
 	s.maxPayloadSizeEstimate.Store(uint32(estimateMaxPayloadSize(s.config.initialPacketSize())))
 	oneRTTStream := newCryptoStream()
@@ -2651,6 +2651,9 @@ func (c *Conn) sendPackets(now monotime.Time) error {
 	if !c.handshakeConfirmed {
 		packet, err := c.packer.PackCoalescedPacket(false, c.maxPacketSize(), now, c.version)
 		if err != nil || packet == nil {
+			if err == nil {
+				c.markApplicationLimited()
+			}
 			return err
 		}
 		if !c.sentFirstPacket && c.perspective == protocol.PerspectiveClient && c.qlogger != nil {
@@ -2849,6 +2852,9 @@ func (c *Conn) sendProbePacket(sendMode ackhandler.SendMode, now monotime.Time) 
 func (c *Conn) appendOneShortHeaderPacket(buf *packetBuffer, maxSize protocol.ByteCount, ecn protocol.ECN, now monotime.Time) (protocol.ByteCount, error) {
 	startLen := buf.Len()
 	p, err := c.packer.AppendPacket(buf, maxSize, now, c.version)
+	if err == errNothingToPack {
+		c.markApplicationLimited()
+	}
 	if err != nil {
 		return 0, err
 	}

@@ -29,10 +29,15 @@ type SenderConfig struct {
 	Algorithm            Algorithm
 	SlowStart            SlowStart
 	InitialWindowPackets uint32
+	// MaxWindowPackets is zero for the native ceiling, or -1 for no packet-count ceiling.
+	MaxWindowPackets int64
 	// SegmentSize fixes the accounting segment independently of the path MTU.
 	// Zero follows the MTU. Connections applies only to byte-mode CUBIC.
-	SegmentSize uint16
-	Connections uint32
+	SegmentSize          uint16
+	Connections          uint32
+	Pacing               *PacingConfig
+	PRR                  bool
+	RecoveryBurstPackets uint32
 }
 
 func NewConfiguredSender(clock Clock, rtt *utils.RTTStats, stats *utils.ConnectionStats, mtu protocol.ByteCount, config SenderConfig, logger qlogwriter.Recorder) *cubicSender {
@@ -43,6 +48,18 @@ func NewConfiguredSender(clock Clock, rtt *utils.RTTStats, stats *utils.Connecti
 	s := NewCubicSender(clock, rtt, stats, segment, config.Algorithm <= AlgorithmReno, logger, config.InitialWindowPackets)
 	s.maxDatagramSize = mtu
 	s.fixedSegmentSize = protocol.ByteCount(config.SegmentSize)
+	s.maxWindowPackets = config.MaxWindowPackets
+	if config.MaxWindowPackets != 0 {
+		s.initialMaxCongestionWindow = s.maxCongestionWindow()
+		s.slowStartThreshold = s.initialMaxCongestionWindow
+		s.congestionWindow = min(s.congestionWindow, s.maxCongestionWindow())
+		s.connStats.CongestionWindow.Store(uint64(s.congestionWindow))
+	}
+	s.prrEnabled = config.PRR
+	s.recoveryBurstPackets = config.RecoveryBurstPackets
+	if config.Pacing != nil && config.Pacing.Algorithm != PacingNative {
+		s.pacing = newPacingPolicy(*config.Pacing, mtu, clock.Now())
+	}
 	s.classicSlowStart = config.SlowStart == SlowStartClassic
 	if config.Algorithm == AlgorithmCubic {
 		s.rfcCubic = new(rfcCubic)

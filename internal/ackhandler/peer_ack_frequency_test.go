@@ -37,7 +37,7 @@ func TestInitialCongestionWindowAndMigration(t *testing.T) {
 	for _, packets := range []uint32{0, 10} {
 		rtt := utils.NewRTTStats()
 		h := NewSentPacketHandler(0, 1200, rtt, new(utils.ConnectionStats), true, false, func(protocol.PacketNumber) {},
-			protocol.PerspectiveClient, nil, utils.DefaultLogger, congestion.SenderConfig{InitialWindowPackets: packets})
+			protocol.PerspectiveClient, nil, utils.DefaultLogger, ClientSendConfig{Congestion: congestion.SenderConfig{InitialWindowPackets: packets}})
 		want := packets
 		if want == 0 {
 			want = 32
@@ -57,7 +57,7 @@ func TestCongestionPolicySurvivesPathMigration(t *testing.T) {
 		{Algorithm: congestion.AlgorithmCubic, SlowStart: congestion.SlowStartClassic, InitialWindowPackets: 10},
 		{Algorithm: congestion.AlgorithmCubicBytes, SlowStart: congestion.SlowStartHybrid, InitialWindowPackets: 32, SegmentSize: 1460, Connections: 2},
 	} {
-		h := NewSentPacketHandler(0, 1200, utils.NewRTTStats(), new(utils.ConnectionStats), true, false, func(protocol.PacketNumber) {}, protocol.PerspectiveClient, nil, utils.DefaultLogger, config).(*sentPacketHandler)
+		h := NewSentPacketHandler(0, 1200, utils.NewRTTStats(), new(utils.ConnectionStats), true, false, func(protocol.PacketNumber) {}, protocol.PerspectiveClient, nil, utils.DefaultLogger, ClientSendConfig{Congestion: config}).(*sentPacketHandler)
 		h.MigratedPath(monotime.Now(), 1280)
 		require.Equal(t, config, h.congestionConfig)
 		window, _ := h.AckFrequencyState()
@@ -67,7 +67,7 @@ func TestCongestionPolicySurvivesPathMigration(t *testing.T) {
 		}
 		require.EqualValues(t, uint64(config.InitialWindowPackets)*segment, window)
 		// Server constructors never apply client-only congestion policies.
-		server := NewSentPacketHandler(0, 1200, utils.NewRTTStats(), new(utils.ConnectionStats), true, false, func(protocol.PacketNumber) {}, protocol.PerspectiveServer, nil, utils.DefaultLogger, config).(*sentPacketHandler)
+		server := NewSentPacketHandler(0, 1200, utils.NewRTTStats(), new(utils.ConnectionStats), true, false, func(protocol.PacketNumber) {}, protocol.PerspectiveServer, nil, utils.DefaultLogger, ClientSendConfig{Congestion: config}).(*sentPacketHandler)
 		require.Zero(t, server.congestionConfig)
 		server.MigratedPath(monotime.Now(), 1280)
 		window, _ = server.AckFrequencyState()

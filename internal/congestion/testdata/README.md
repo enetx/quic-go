@@ -24,3 +24,31 @@ Scenarios 0/1 use 50/1000 ms spacing; scenario 2 adds idle and a second loss.
 Source: https://github.com/google/quiche/blob/a1628192cf32ba40d21e0dd80f485d68c24ff87a/quiche/quic/core/congestion_control/cubic_bytes.cc
 SHA-256: `7b5aeff7bab0ebc66445a3631009339e4a64062aaf0ba26665c8965689bfa29a`.
 Header SHA-256: `5cd5fd6abc1051f28213aa20c2e089223b81ed501f3466b3fb6c2903a349cbf4`.
+
+`pacing_vectors.json` contains 120 steps from the unmodified Firefox 160
+`pace.rs`, executed by `reference_pacing.rs`. Cases cover initial bursts, idle
+credit, sub-granularity debt, a large window followed by a rate reduction, and
+zero RTT. Timestamps and next deadlines are nanoseconds from the scenario start;
+a zero deadline means immediately sendable. The source file must be downloaded
+as `firefox-pace.rs` beside the runner. Compile with
+`rustc --edition=2024 -Awarnings reference_pacing.rs -o reference-pacing` and
+compare the JSON output with the fixture.
+Source: https://github.com/mozilla-firefox/firefox/blob/FIREFOX_160_0_RELEASE/third_party/rust/neqo-transport/src/pace.rs
+SHA-256: `c9e6b30c7edb392c38920299c66f3635f682027738d2654839db7fbe7208742a`.
+
+`prr_vectors.json` records 40 send/ACK states, each checked against five in-flight
+levels (200 allowance comparisons). `reference_prr.cc` executes the unmodified
+QUICHE PRR source and class declaration; only scalar types, the 1460-byte
+accounting segment, and unrelated dependency headers are stubbed.
+Source: https://github.com/google/quiche/blob/a1628192cf32ba40d21e0dd80f485d68c24ff87a/quiche/quic/core/congestion_control/prr_sender.cc
+SHA-256: `c04aa893afceeb57021fc39de77c3cffc6b1168ec3d7a072d698f01d0ee5c4bf`.
+
+To reproduce in an empty temporary directory, copy `reference_prr.cc`, download
+the pinned `prr_sender.cc` as `prr.cc`, and download its original header at
+`quiche/quic/core/congestion_control/prr_sender.h`. Create empty files at
+`quiche/quic/core/quic_bandwidth.h`, `quic_time.h`, `quic_packets.h`, and
+`quiche/quic/platform/api/quic_export.h`. The runner supplies their relevant
+definitions. Compile with `clang++ -std=c++17 -I. reference_prr.cc -o reference-prr`
+and compare its parsed JSON output with the fixture. Do not overwrite a real
+QUICHE checkout with these stubs. No Rust/C++ compiler or source download is
+required to run the Go regression tests.

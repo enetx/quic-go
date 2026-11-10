@@ -61,6 +61,16 @@ type ClientHandshake struct {
 	// units of the accounting segment (the initial MTU unless fixed below).
 	// Zero retains the native packet count.
 	InitialCongestionWindowPackets uint32
+	// MaxCongestionWindowPackets sets a ceiling in accounting segments. Zero keeps
+	// the native 10000-segment ceiling; -1 removes that ceiling. Internal packet
+	// history and integer safety limits still apply. Positive values are 2..2^32-1.
+	MaxCongestionWindowPackets int64
+	Pacing                     *PacingConfig
+	ProportionalRateReduction  bool
+	RecoveryBurstPackets       uint32
+	// PersistentCongestionThreshold collapses the window after this many base
+	// PTO durations of consecutively lost ack-eliciting packets. Zero disables it.
+	PersistentCongestionThreshold uint32
 	// CongestionControl selects Reno, RFC 9438 CUBIC, or fixed-point byte-mode
 	// CUBIC. Zero retains native Reno. Pacing and loss detection are independent.
 	CongestionControl CongestionControlAlgorithm
@@ -128,6 +138,12 @@ type ClientHandshake struct {
 	InitialDestinationConnectionIDLength int
 	// InitialPacketNumber is used on the first connection attempt only.
 	InitialPacketNumber uint64
+	// SeparatePacketNumberSpaces starts Handshake and Application Data at zero,
+	// independently of Initial. 0-RTT and 1-RTT share Application Data.
+	SeparatePacketNumberSpaces bool
+	// DisablePacketNumberSkipping suppresses artificial Application Data gaps,
+	// including PTO skips. The native skipped-ACK defense remains the default.
+	DisablePacketNumberSkipping bool
 }
 
 // Clone snapshots mutable configuration while retaining callback identity.
@@ -136,6 +152,10 @@ func (h *ClientHandshake) Clone() *ClientHandshake {
 		return nil
 	}
 	c := *h
+	if h.Pacing != nil {
+		p := *h.Pacing
+		c.Pacing = &p
+	}
 	if h.InitialPacketProtection != nil {
 		policy := *h.InitialPacketProtection
 		c.InitialPacketProtection = &policy
@@ -166,6 +186,24 @@ func (h *ClientHandshake) Validate() error {
 	}
 	if n := h.InitialCongestionWindowPackets; n != 0 && (n < 2 || n > protocol.MaxCongestionWindowPackets) {
 		return fmt.Errorf("initial congestion window outside supported packet range")
+	}
+	if n := h.MaxCongestionWindowPackets; n < -1 || n == 1 || n > 1<<32-1 {
+		return fmt.Errorf("invalid maximum congestion window")
+	}
+	initial := h.InitialCongestionWindowPackets
+	if initial == 0 {
+		initial = 32
+	}
+	if h.MaxCongestionWindowPackets > 0 && int64(initial) > h.MaxCongestionWindowPackets {
+		return fmt.Errorf("initial congestion window exceeds maximum")
+	}
+	if h.RecoveryBurstPackets > 16 || h.PersistentCongestionThreshold > 16 {
+		return fmt.Errorf("invalid congestion recovery policy")
+	}
+	if p := h.Pacing; p != nil {
+		if p.Algorithm > PacingScheduled || p.Algorithm != PacingNative && (p.BurstPackets == 0 || p.BurstPackets > 10000 || p.LumpyPackets == 0 || p.LumpyPackets > 10000 || p.LumpyWindowFraction > 1000 || p.Granularity < 0 || p.Granularity > time.Second || p.SlowStartGain == 0 || p.SlowStartGain > 10000 || p.AvoidanceGain == 0 || p.AvoidanceGain > 10000) {
+			return fmt.Errorf("invalid pacing policy")
+		}
 	}
 	maximum := h.MaxAckDelay
 	if maximum == 0 {
@@ -251,16 +289,21 @@ func (c *Config) clientTLSFactory() tlsquic.NewClient {
 	return c.ClientHandshake.NewTLSClient
 }
 
-func (c *Config) congestionControlConfig() congestion.SenderConfig {
+func (c *Config) clientSendConfig() ackhandler.ClientSendConfig {
 	h := c.ClientHandshake
 	if h == nil {
-		return congestion.SenderConfig{}
+		return ackhandler.ClientSendConfig{}
 	}
-	return congestion.SenderConfig{
-		Algorithm: h.CongestionControl, SlowStart: h.SlowStart,
-		InitialWindowPackets: h.InitialCongestionWindowPackets,
-		SegmentSize:          h.CongestionControlSegmentSize,
-		Connections:          h.CongestionControlConnections,
+	return ackhandler.ClientSendConfig{
+		Congestion: congestion.SenderConfig{
+			Algorithm: h.CongestionControl, SlowStart: h.SlowStart,
+			InitialWindowPackets: h.InitialCongestionWindowPackets, MaxWindowPackets: h.MaxCongestionWindowPackets,
+			Pacing: h.Pacing, PRR: h.ProportionalRateReduction, RecoveryBurstPackets: h.RecoveryBurstPackets,
+			SegmentSize: h.CongestionControlSegmentSize, Connections: h.CongestionControlConnections,
+		},
+		PersistentCongestionThreshold: h.PersistentCongestionThreshold,
+		SeparatePacketNumberSpaces:    h.SeparatePacketNumberSpaces,
+		DisablePacketNumberSkipping:   h.DisablePacketNumberSkipping,
 	}
 }
 

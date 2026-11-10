@@ -24,5 +24,5 @@ func TestCongestionControlValidationAndClone(t *testing.T) {
 		clone.CongestionControl = 255
 		require.NotEqual(t, h.CongestionControl, clone.CongestionControl)
 	}
-	require.Zero(t, (&Config{}).congestionControlConfig())
+	require.Zero(t, (&Config{}).clientSendConfig())
 }

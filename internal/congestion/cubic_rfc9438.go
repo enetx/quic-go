@@ -39,12 +39,13 @@ func (c *rfcCubic) afterAck(cwnd, acked, mss protocol.ByteCount, rtt time.Durati
 		c.renoAcked -= n * w / alpha
 	}
 	target = max(target, c.wEst)
-	needed := protocol.ByteCount(segment * w / max(target-w, 1))
+	needed := protocol.ByteCount(min(segment*w/max(target-w, 1), float64(protocol.MaxByteCount-1024)))
+	needed = max(needed, 1)
 	// Credit accumulated under a slower curve earns at most one increment
 	// when the curve accelerates; the newly ACKed bytes are applied in full.
 	credit := min(c.acked, needed) + acked
 	c.acked = credit % needed
-	return cwnd + (credit/needed)*mss
+	return cwnd + min((credit/needed)*mss, protocol.MaxByteCount-cwnd)
 }
 
 func (c *rfcCubic) afterLoss(cwnd, mss protocol.ByteCount, ecn bool) protocol.ByteCount {
@@ -58,8 +59,8 @@ func (c *rfcCubic) afterLoss(cwnd, mss protocol.ByteCount, ecn bool) protocol.By
 	if ecn {
 		factor = 85 // RFC 8511, distinct from a loss-induced cutback.
 	}
-	c.acked = c.acked * factor / 100
-	return cwnd * factor / 100
+	c.acked = c.acked/100*factor + c.acked%100*factor/100
+	return cwnd/100*factor + cwnd%100*factor/100
 }
 
 // AckBatcher lets a controller apply one growth calculation per received ACK

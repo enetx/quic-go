@@ -1,0 +1,442 @@
+[
+  {
+    "event": "s",
+    "bytes": 1460,
+    "allowed": [
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 2920,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 4380,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "s",
+    "bytes": 5840,
+    "allowed": [
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 7300,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 1460,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "s",
+    "bytes": 2920,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 4380,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 5840,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "s",
+    "bytes": 7300,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 1460,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 2920,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "s",
+    "bytes": 4380,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 5840,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 7300,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "s",
+    "bytes": 1460,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 2920,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 4380,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "s",
+    "bytes": 5840,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 7300,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 1460,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "s",
+    "bytes": 2920,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 4380,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 5840,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "s",
+    "bytes": 7300,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 1460,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 2920,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "s",
+    "bytes": 4380,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 5840,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 7300,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "s",
+    "bytes": 1460,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 2920,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 4380,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "s",
+    "bytes": 5840,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 7300,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 1460,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "s",
+    "bytes": 2920,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 4380,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "a",
+    "bytes": 5840,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "event": "s",
+    "bytes": 7300,
+    "allowed": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  }
+]

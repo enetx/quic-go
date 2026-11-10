@@ -46,15 +46,22 @@ type cubicSender struct {
 	pacer           *pacer
 	clock           Clock
 
-	reno             bool
-	rfcCubic         *rfcCubic
-	classicSlowStart bool
-	fixedSegmentSize protocol.ByteCount
-	firstAppLimited  protocol.PacketNumber
-	batchingAck      bool
-	batchAcked       protocol.ByteCount
-	batchPackets     protocol.ByteCount
-	batchCwndLimited bool
+	reno                 bool
+	rfcCubic             *rfcCubic
+	classicSlowStart     bool
+	fixedSegmentSize     protocol.ByteCount
+	maxWindowPackets     int64
+	pacing               *pacingPolicy
+	prr                  prr
+	prrEnabled           bool
+	recoveryBurstPackets uint32
+	recoveryAllowance    protocol.ByteCount
+	lastInFlight         protocol.ByteCount
+	firstAppLimited      protocol.PacketNumber
+	batchingAck          bool
+	batchAcked           protocol.ByteCount
+	batchPackets         protocol.ByteCount
+	batchCwndLimited     bool
 
 	// Track the largest packet that has been sent.
 	largestSentPacketNumber protocol.PacketNumber
@@ -159,16 +166,31 @@ func newCubicSender(
 }
 
 // TimeUntilSend returns when the next packet should be sent.
-func (c *cubicSender) TimeUntilSend(_ protocol.ByteCount) monotime.Time {
+func (c *cubicSender) TimeUntilSend(inFlight protocol.ByteCount) monotime.Time {
+	if c.pacing != nil {
+		c.lastInFlight = inFlight
+		return c.pacing.deadline(c, inFlight, c.clock.Now())
+	}
 	return c.pacer.TimeUntilSend(c.pacingRate())
 }
 
 func (c *cubicSender) HasPacingBudget(now monotime.Time) bool {
+	if c.pacing != nil {
+		d := c.pacing.deadline(c, c.lastInFlight, now)
+		return d.IsZero() || d <= now
+	}
 	return c.pacer.Budget(now, c.pacingRate()) >= c.maxDatagramSize
 }
 
 func (c *cubicSender) maxCongestionWindow() protocol.ByteCount {
-	return c.segmentSize() * protocol.MaxCongestionWindowPackets
+	switch {
+	case c.maxWindowPackets < 0:
+		return protocol.MaxByteCount
+	case c.maxWindowPackets > 0:
+		return c.segmentSize() * protocol.ByteCount(c.maxWindowPackets)
+	default:
+		return c.segmentSize() * protocol.MaxCongestionWindowPackets
+	}
 }
 
 func (c *cubicSender) minCongestionWindow() protocol.ByteCount {
@@ -182,19 +204,41 @@ func (c *cubicSender) OnPacketSent(
 	bytes protocol.ByteCount,
 	isRetransmittable bool,
 ) {
-	c.pacer.SentPacket(sentTime, bytes, c.pacingRate())
+	if c.pacing == nil {
+		c.pacer.SentPacket(sentTime, bytes, c.pacingRate())
+	}
+	c.lastInFlight = bytesInFlight
+	if isRetransmittable {
+		c.lastInFlight += bytes
+	}
 	if !isRetransmittable {
+		if c.pacing != nil {
+			c.pacing.sent(c, sentTime, bytesInFlight, bytes, false)
+		}
 		return
+	}
+	if c.prrEnabled && c.InRecovery() {
+		c.prr.sent += bytes
+	}
+	if c.recoveryAllowance > 0 {
+		c.recoveryAllowance = max(0, c.recoveryAllowance-bytes)
 	}
 	if c.rfcCubic != nil && c.rfcCwndLimited(bytesInFlight+bytes) {
 		c.firstAppLimited = packetNumber + 1
 	}
 	c.largestSentPacketNumber = packetNumber
 	c.hybridSlowStart.OnPacketSent(packetNumber)
+	if c.pacing != nil {
+		c.pacing.sent(c, sentTime, bytesInFlight, bytes, true)
+	}
 }
 
 func (c *cubicSender) CanSend(bytesInFlight protocol.ByteCount) bool {
-	return bytesInFlight < c.GetCongestionWindow()
+	c.lastInFlight = bytesInFlight
+	if c.prrEnabled && c.InRecovery() {
+		return c.prr.canSend(c.congestionWindow, bytesInFlight, c.slowStartThreshold, c.segmentSize())
+	}
+	return c.recoveryAllowance > 0 || bytesInFlight < c.GetCongestionWindow()
 }
 
 func (c *cubicSender) InRecovery() bool {
@@ -225,7 +269,13 @@ func (c *cubicSender) OnPacketAcked(
 	eventTime monotime.Time,
 ) {
 	c.largestAckedPacketNumber = max(ackedPacketNumber, c.largestAckedPacketNumber)
+	if c.rfcCubic != nil && ackedPacketNumber <= c.largestSentAtLastCutback {
+		return
+	}
 	if c.InRecovery() {
+		if c.prrEnabled {
+			c.prr.acked(ackedBytes)
+		}
 		return
 	}
 	if c.rfcCubic != nil {
@@ -250,6 +300,9 @@ func (c *cubicSender) OnPacketAcked(
 func (c *cubicSender) OnCongestionEvent(packetNumber protocol.PacketNumber, lostBytes, priorInFlight protocol.ByteCount) {
 	c.connStats.PacketsLost.Add(1)
 	c.connStats.BytesLost.Add(uint64(lostBytes))
+	if lostBytes > 0 && c.pacing != nil && c.pacing.config.Algorithm == PacingScheduled {
+		c.pacing.burst = 0
+	}
 
 	// TCP NewReno (RFC6582) says that once a loss occurs, any losses in packets
 	// already sent should be treated as a single loss event, since it's expected.
@@ -273,6 +326,10 @@ func (c *cubicSender) OnCongestionEvent(packetNumber protocol.PacketNumber, lost
 		}
 	}
 
+	if c.prrEnabled {
+		c.prr.lost(priorInFlight)
+	}
+	c.recoveryAllowance = protocol.ByteCount(c.recoveryBurstPackets) * c.maxDatagramSize
 	c.lastCutbackExitedSlowstart = c.InSlowStart()
 	c.maybeQlogStateChange(qlog.CongestionStateRecovery)
 
@@ -355,6 +412,9 @@ func (c *cubicSender) maybeIncreaseCwnd(
 			c.congestionWindow = min(c.congestionWindow+ackedBytes, c.slowStartThreshold, c.maxCongestionWindow())
 		} else {
 			c.congestionWindow += c.segmentSize()
+			if c.maxWindowPackets != 0 {
+				c.congestionWindow = min(c.congestionWindow, c.maxCongestionWindow())
+			}
 		}
 		c.maybeQlogStateChange(qlog.CongestionStateSlowStart)
 		return
@@ -366,6 +426,9 @@ func (c *cubicSender) maybeIncreaseCwnd(
 		c.numAckedPackets++
 		if c.numAckedPackets >= uint64(c.congestionWindow/c.segmentSize()) {
 			c.congestionWindow += c.segmentSize()
+			if c.maxWindowPackets != 0 {
+				c.congestionWindow = min(c.congestionWindow, c.maxCongestionWindow())
+			}
 			c.numAckedPackets = 0
 		}
 	} else {
@@ -409,6 +472,8 @@ func (c *cubicSender) pacingRate() Bandwidth {
 func (c *cubicSender) OnRetransmissionTimeout(packetsRetransmitted bool) {
 	c.largestSentAtLastCutback = protocol.InvalidPacketNumber
 	c.undoState.Reset()
+	c.prr = prr{}
+	c.recoveryAllowance = 0
 	if !packetsRetransmitted {
 		return
 	}
@@ -436,6 +501,11 @@ func (c *cubicSender) OnConnectionMigration() {
 		*c.rfcCubic = rfcCubic{}
 	}
 	c.numAckedPackets = 0
+	c.prr = prr{}
+	c.recoveryAllowance = 0
+	if c.pacing != nil {
+		c.pacing = newPacingPolicy(c.pacing.config, c.maxDatagramSize, c.clock.Now())
+	}
 	c.congestionWindow = c.initialCongestionWindow
 	c.connStats.CongestionWindow.Store(uint64(c.congestionWindow))
 	c.slowStartThreshold = c.initialMaxCongestionWindow

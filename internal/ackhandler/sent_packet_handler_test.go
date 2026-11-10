@@ -1346,7 +1346,7 @@ func TestSentPacketHandlerCongestion(t *testing.T) {
 		require.Equal(t, SendAny, sph.SendMode(now))
 		pn := sph.PopPacketNumber(protocol.PacketNumberSpaceInitial)
 		bytesInFlight += 1000
-		cong.EXPECT().OnPacketSent(now, bytesInFlight, pn, protocol.ByteCount(1000), true)
+		cong.EXPECT().OnPacketSent(now, bytesInFlight-1000, pn, protocol.ByteCount(1000), true)
 		sph.SentPacket(now, pn, protocol.InvalidPacketNumber, nil, []Frame{packets.NewPingFrame(pn)}, protocol.EncryptionInitial, protocol.ECNNon, 1000, i == 1, false)
 		pns = append(pns, pn)
 		sendTimes = append(sendTimes, now)
@@ -1399,7 +1399,7 @@ func TestSentPacketHandlerCongestion(t *testing.T) {
 	// send another packet to check that bytes_in_flight was correctly adjusted
 	now = timeout.Add(100 * time.Millisecond)
 	pn := sph.PopPacketNumber(protocol.PacketNumberSpaceInitial)
-	cong.EXPECT().OnPacketSent(now, protocol.ByteCount(2000), pn, protocol.ByteCount(1000), true)
+	cong.EXPECT().OnPacketSent(now, protocol.ByteCount(1000), pn, protocol.ByteCount(1000), true)
 	sph.SentPacket(now, pn, protocol.InvalidPacketNumber, nil, []Frame{packets.NewPingFrame(pn)}, protocol.EncryptionInitial, protocol.ECNNon, 1000, false, false)
 }
 

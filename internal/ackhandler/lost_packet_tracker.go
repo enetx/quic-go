@@ -11,8 +11,9 @@ import (
 const maxTrackedLostPackets = 64
 
 type lostPacket struct {
-	PacketNumber protocol.PacketNumber
-	SendTime     monotime.Time
+	PacketNumber     protocol.PacketNumber
+	SendTime         monotime.Time
+	CongestionNumber protocol.PacketNumber
 }
 
 type lostPacketTracker struct {
@@ -27,13 +28,18 @@ func newLostPacketTracker() *lostPacketTracker {
 	}
 }
 
-func (t *lostPacketTracker) Add(p protocol.PacketNumber, sendTime monotime.Time) {
+func (t *lostPacketTracker) Add(p protocol.PacketNumber, sendTime monotime.Time, congestionNumber ...protocol.PacketNumber) {
 	if len(t.lostPackets) == maxTrackedLostPackets {
 		t.lostPackets = t.lostPackets[1:]
 	}
+	number := p
+	if len(congestionNumber) > 0 {
+		number = congestionNumber[0]
+	}
 	t.lostPackets = append(t.lostPackets, lostPacket{
-		PacketNumber: p,
-		SendTime:     sendTime,
+		CongestionNumber: number,
+		PacketNumber:     p,
+		SendTime:         sendTime,
 	})
 }
 
@@ -74,4 +80,13 @@ func (t *lostPacketTracker) DeleteBefore(ti monotime.Time) {
 
 func (t *lostPacketTracker) Reset() {
 	t.lostPackets = t.lostPackets[:0]
+}
+
+func (t *lostPacketTracker) CongestionNumber(pn protocol.PacketNumber) protocol.PacketNumber {
+	for _, p := range t.lostPackets {
+		if p.PacketNumber == pn {
+			return p.CongestionNumber
+		}
+	}
+	return pn
 }

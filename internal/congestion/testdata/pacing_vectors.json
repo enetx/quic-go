@@ -1,0 +1,842 @@
+[
+  {
+    "scenario": "burst-idle",
+    "now_ns": 0,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 5000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 10000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 15000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 20000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 25000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 30000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 35000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 40000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 45000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 50000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 55000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 60000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 65000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 70000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 75000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 80000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 85000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 90000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 95000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1000000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1000100000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1000200000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1005001113
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1000300000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1010001670
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1000400000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1015002227
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1000500000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1020002784
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1000600000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1025003341
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1000700000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1030003898
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1000800000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1035004455
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1000900000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1040005011
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1001000000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1045005568
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1001100000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1050006125
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1001200000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1055006682
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1001300000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1060007239
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1001400000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1065007796
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1001500000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1070008353
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1001600000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1075008910
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1001700000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1080009466
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1001800000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1085010023
+  },
+  {
+    "scenario": "burst-idle",
+    "now_ns": 1001900000,
+    "rtt_ns": 100000000,
+    "cwnd": 12570,
+    "next_ns": 1090010580
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 0,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 1000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 2000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 3000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 4000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 5000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 6000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 7000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 8000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 9000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 10000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 11000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 12000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 13000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 14000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 15000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 16000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 17000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 18000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 19000,
+    "rtt_ns": 1000000,
+    "cwnd": 1257000,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 20000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 21000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 22000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 23000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 24000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 0
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 25000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 1269033
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 26000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 1519038
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 27000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 1769044
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 28000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 2019050
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 29000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 2269055
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 30000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 2519061
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 31000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 2769066
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 32000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 3019072
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 33000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 3269077
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 34000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 3519083
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 35000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 3769089
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 36000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 4019094
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 37000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 4269100
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 38000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 4519105
+  },
+  {
+    "scenario": "debt",
+    "now_ns": 39000,
+    "rtt_ns": 1000000,
+    "cwnd": 2514,
+    "next_ns": 4769111
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 0,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 1000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 2000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 3000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 4000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 5000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 6000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 7000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 8000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 9000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 10000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 11000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 12000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 13000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 14000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 15000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 16000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 17000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 18000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 19000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 20000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 21000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 22000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 23000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 24000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 25000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 26000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 27000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 28000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 29000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 30000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 31000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 32000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 33000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 34000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 35000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 36000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 37000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 38000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  },
+  {
+    "scenario": "zero-rtt",
+    "now_ns": 39000,
+    "rtt_ns": 0,
+    "cwnd": 12570,
+    "next_ns": 0
+  }
+]
