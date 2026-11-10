@@ -45,6 +45,10 @@ type ClientHandshake struct {
 	MaxAckDelay time.Duration
 	// AckPolicy controls local Application Data ACK scheduling. Nil keeps native behavior.
 	AckPolicy *AckPolicy
+	// LegacyAckFrequencyMinDelay enables the legacy ACK_FREQUENCY receive
+	// format and advertises its min_ack_delay (0xff02de1a). Zero disables it.
+	// Positive values must be whole microseconds no larger than MaxAckDelay.
+	LegacyAckFrequencyMinDelay time.Duration
 	// ReceiveWindowUpdateDivisor refreshes credit after more than 1/divisor
 	// of the receive window is consumed. Zero retains the native policy.
 	ReceiveWindowUpdateDivisor uint32
@@ -127,6 +131,13 @@ func (h *ClientHandshake) Clone() *ClientHandshake {
 func (h *ClientHandshake) Validate() error {
 	if h == nil {
 		return nil
+	}
+	maximum := h.MaxAckDelay
+	if maximum == 0 {
+		maximum = ackhandler.MaxAckDelay
+	}
+	if h.LegacyAckFrequencyMinDelay < 0 || h.LegacyAckFrequencyMinDelay > 0 && (h.LegacyAckFrequencyMinDelay > maximum || h.LegacyAckFrequencyMinDelay%time.Microsecond != 0) {
+		return fmt.Errorf("invalid legacy ACK_FREQUENCY minimum delay")
 	}
 	if h.InitialPaddingMode > InitialPaddingDatagram {
 		return fmt.Errorf("invalid Initial padding mode: %d", h.InitialPaddingMode)
@@ -213,6 +224,12 @@ func (c *Conn) configureClientParameters(p *wire.TransportParameters) {
 		c.receivedPacketHandler.SetMaxAckDelay(h.MaxAckDelay)
 	}
 	c.receivedPacketHandler.SetAckPolicy(h.AckPolicy, c.rttStats)
+	if h.LegacyAckFrequencyMinDelay > 0 {
+		delay := h.LegacyAckFrequencyMinDelay
+		p.LegacyMinAckDelay = &delay
+		c.receivedPacketHandler.SetLegacyAckFrequency(delay)
+		c.frameParser.SetLegacyAckFrequency(true)
+	}
 	if w := h.StreamReceiveWindows; w != nil {
 		p.InitialMaxStreamDataBidiLocal = protocol.ByteCount(w.BidiLocal)
 		p.InitialMaxStreamDataBidiRemote = protocol.ByteCount(w.BidiRemote)

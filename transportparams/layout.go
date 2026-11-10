@@ -94,7 +94,8 @@ func (l *Layout) Apply(encoded []byte) []byte {
 			panic("transportparams: invalid engine parameter length")
 		}
 		rest = rest[n+int(length):]
-		if isGrease(id) {
+		// Legacy min_ack_delay is engine-owned, despite sharing a reserved residue.
+		if isGrease(id) && id != 0xff02de1a {
 			if l.DisableGrease {
 				continue
 			}

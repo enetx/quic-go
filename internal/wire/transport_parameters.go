@@ -100,6 +100,9 @@ type TransportParameters struct {
 	MaxDatagramFrameSize protocol.ByteCount // RFC 9221
 	EnableResetStreamAt  bool               // https://datatracker.ietf.org/doc/draft-ietf-quic-reliable-stream-reset/09/
 	MinAckDelay          *time.Duration
+	// LegacyMinAckDelay is a local-only legacy ACK_FREQUENCY advertisement.
+	// Peer values remain unknown unless a sender implementation opts in.
+	LegacyMinAckDelay *time.Duration
 }
 
 // Unmarshal the transport parameters
@@ -467,6 +470,9 @@ func (p *TransportParameters) Marshal(pers protocol.Perspective) []byte {
 			b = quicvarint.Append(b, uint64(legacyResetStreamAtParameterID))
 			b = quicvarint.Append(b, 0)
 		}
+	}
+	if p.LegacyMinAckDelay != nil {
+		b = p.marshalVarintParam(b, transportParameterID(0xff02de1a), uint64(*p.LegacyMinAckDelay/time.Microsecond))
 	}
 	if p.MinAckDelay != nil {
 		b = p.marshalVarintParam(b, minAckDelayParameterID, uint64(*p.MinAckDelay/time.Microsecond))

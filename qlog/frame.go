@@ -50,7 +50,8 @@ type (
 	// A StreamDataBlockedFrame is a STREAM_DATA_BLOCKED frame.
 	StreamDataBlockedFrame = wire.StreamDataBlockedFrame
 	// An AckFrequencyFrame is an ACK_FREQUENCY frame.
-	AckFrequencyFrame = wire.AckFrequencyFrame
+	AckFrequencyFrame       = wire.AckFrequencyFrame
+	LegacyAckFrequencyFrame = wire.LegacyAckFrequencyFrame
 	// An ImmediateAckFrame is an IMMEDIATE_ACK frame.
 	ImmediateAckFrame = wire.ImmediateAckFrame
 )
@@ -130,6 +131,8 @@ func (f Frame) Encode(enc *jsontext.Encoder) error {
 		return encodeHandshakeDoneFrame(enc, frame)
 	case *DatagramFrame:
 		return encodeDatagramFrame(enc, frame)
+	case *LegacyAckFrequencyFrame:
+		return encodeLegacyAckFrequencyFrame(enc, frame)
 	case *AckFrequencyFrame:
 		return encodeAckFrequencyFrame(enc, frame)
 	case *ImmediateAckFrame:
@@ -545,6 +548,23 @@ func encodeImmediateAckFrame(enc *jsontext.Encoder, _ *ImmediateAckFrame) error 
 	h.WriteToken(jsontext.BeginObject)
 	h.WriteToken(jsontext.String("frame_type"))
 	h.WriteToken(jsontext.String("immediate_ack"))
+	h.WriteToken(jsontext.EndObject)
+	return h.err
+}
+
+func encodeLegacyAckFrequencyFrame(enc *jsontext.Encoder, f *LegacyAckFrequencyFrame) error {
+	h := encoderHelper{enc: enc}
+	h.WriteToken(jsontext.BeginObject)
+	h.WriteToken(jsontext.String("frame_type"))
+	h.WriteToken(jsontext.String("ack_frequency"))
+	h.WriteToken(jsontext.String("sequence_number"))
+	h.WriteToken(jsontext.Uint(f.SequenceNumber))
+	h.WriteToken(jsontext.String("ack_eliciting_threshold"))
+	h.WriteToken(jsontext.Uint(f.AckElicitingThreshold))
+	h.WriteToken(jsontext.String("request_max_ack_delay"))
+	h.WriteToken(jsontext.Float(milliseconds(f.RequestMaxAckDelay)))
+	h.WriteToken(jsontext.String("ignore_order"))
+	h.WriteToken(jsontext.Bool(f.IgnoreOrder))
 	h.WriteToken(jsontext.EndObject)
 	return h.err
 }

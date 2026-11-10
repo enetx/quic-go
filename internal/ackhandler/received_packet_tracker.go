@@ -84,10 +84,12 @@ const packetsBeforeAck = 2
 // The appDataReceivedPacketTracker tracks packets received in the Application Data packet number space.
 // It waits until at least 2 packets were received before queueing an ACK, or until the max_ack_delay was reached.
 type appDataReceivedPacketTracker struct {
-	ackPolicy      *AckPolicy
-	ackRTT         *utils.RTTStats
-	ackPolicyState ackPolicyState
-	ackDelayLimit  time.Duration
+	legacyAckFrequency *legacyAckFrequencyState
+	hasObservedPacket  bool
+	ackPolicy          *AckPolicy
+	ackRTT             *utils.RTTStats
+	ackPolicyState     ackPolicyState
+	ackDelayLimit      time.Duration
 	receivedPacketTracker
 
 	largestObservedRcvdTime monotime.Time
@@ -114,6 +116,11 @@ func newAppDataReceivedPacketTracker(logger utils.Logger) *appDataReceivedPacket
 func (h *appDataReceivedPacketTracker) ReceivedPacket(pn protocol.PacketNumber, ecn protocol.ECN, rcvTime monotime.Time, ackEliciting bool) error {
 	if err := h.receivedPacketTracker.ReceivedPacket(pn, ecn, ackEliciting); err != nil {
 		return err
+	}
+	seen := h.hasObservedPacket
+	h.hasObservedPacket = true
+	if h.legacyAckFrequency != nil && h.legacyAckFrequency.active {
+		return h.receivedPacketWithLegacyAckFrequency(pn, rcvTime, ackEliciting, seen)
 	}
 	if h.ackPolicy != nil {
 		return h.receivedPacketWithPolicy(pn, ecn, rcvTime, ackEliciting)

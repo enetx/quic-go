@@ -143,9 +143,10 @@ implement compatible in-flight version negotiation (RFC 9368). Advertising v2 in
 version_information while starting v1 makes supporting servers switch keys; this
 client cannot consume those packets. Surf's Firefox profile deliberately leaves
 that capability unadvertised. Explicit native v2 connections remain supported.
-Neqo's legacy min_ack_delay codepoint (`0xff02de1a`, mislabeled GREASE by the
-fingerprint endpoint) is likewise not advertised: the native ACK_FREQUENCY parser
-has no receiver implementation and its newer last-field semantics differ.
+The native ACK_FREQUENCY parser has different last-field semantics from the
+legacy format. The fork exposes an isolated opt-in legacy receiver and local
+min_ack_delay advertisement; see below. It does not generate adaptive requests
+for the peer's ACK rate.
 ACK ratio/frequency, packet scheduling/coalescing, congestion/loss behavior and
 resource-specific priority policy still differ from browser engines. Browser
 defaults and workaround decisions belong in Surf.
@@ -180,8 +181,9 @@ Client receive ACK policy is now configurable: initial/decimated packet threshol
 transition by packet-number span, RTT-scaled delay and floor, fixed earliest deadline,
 gap-window/immediate reordering and ECN response. Browser policy remains in Surf.
 The native tracker branch and Initial/Handshake spaces are preserved. Policy is
-cloned per configuration and connection. This does not implement ACK_FREQUENCY,
-its legacy wire parameter, congestion control, packet pacing or version switching.
+cloned per configuration and connection. These local controls do not negotiate ACK_FREQUENCY; the separate opt-in legacy
+receiver is described below. They do not change congestion control, packet pacing
+or version switching.
 Deterministic `internal/ackhandler/ack_policy_test.go` cases cover boundary numbers,
 non-eliciting packets, timer expiry, real RTT samples, gaps, ECN and snapshots.
 
@@ -258,3 +260,32 @@ A separate change would need per-space wire-number histories and a globally
 ordered internal transmission identifier for congestion bookkeeping, plus tests
 for Retry, rejected 0-RTT, key disposal, PTO, loss/reordering and migration probes.
 No partial counter split or forced wire truncation is included in this release.
+
+## Legacy ACK_FREQUENCY receive mode
+
+`ClientHandshake.LegacyAckFrequencyMinDelay` enables receive support and emits
+local parameter 0xff02de1a. Zero retains native parsing and advertisement; positive
+whole-microsecond values must fit the configured max_ack_delay. Profiles and the
+chosen minimum remain in Surf. This mode adds no outgoing ACK-rate requests.
+
+`internal/wire/legacy_ack_frequency_frame.go` isolates the three-varint plus
+single-byte ignore_order format. It is deliberately separate from the existing
+newer draft parser. Legacy mode accepts it only in 1-RTT and does not enable
+IMMEDIATE_ACK. Tolerance zero and flags other than 0/1 are frame errors; requested
+delay below the local advertised minimum is a protocol violation. Oversized delay
+conversion and alarm deadlines saturate without integer wrap.
+
+The tracker uses the requested tolerance, delay and ordering flag after the first
+valid update. Equal sequence numbers replace state, older sequences are ignored,
+and an already pending ACK deadline is retained. Initial/Handshake trackers and
+native behavior when unset are preserved. Source references:
+[Firefox legacy frame parser](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/third_party/rust/neqo-transport/src/frame.rs),
+[receiver validation](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/third_party/rust/neqo-transport/src/connection/mod.rs), and
+[sequence/timer rules](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/third_party/rust/neqo-transport/src/tracking.rs).
+
+Transport-parameter layout preserves this known engine field even though its
+number is congruent to 27 modulo 31. Public custom-parameter injection remains
+forbidden for engine-owned IDs. Private parser/tracker tests, independent Neqo
+bytes, qlog serialization and real client/server frame injection cover the mode,
+including disabled and invalid-delay connection errors. Surf additionally decrypts
+Initial bytes to verify the Firefox advertisement, ordering, overrides and opt-out.

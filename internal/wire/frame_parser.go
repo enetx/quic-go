@@ -18,6 +18,7 @@ type FrameParser struct {
 	supportsDatagrams     bool
 	supportsResetStreamAt bool
 	supportsAckFrequency  bool
+	legacyAckFrequency    bool
 
 	// To avoid allocating when parsing, keep a single ACK frame struct.
 	// It is used over and over again.
@@ -55,7 +56,8 @@ func (p *FrameParser) ParseType(b []byte, encLevel protocol.EncryptionLevel) (Fr
 		valid := ft.isValidRFC9000() ||
 			(p.supportsDatagrams && ft.IsDatagramFrameType()) ||
 			(p.supportsResetStreamAt && ft == FrameTypeResetStreamAt) ||
-			(p.supportsAckFrequency && (ft == FrameTypeAckFrequency || ft == FrameTypeImmediateAck))
+			(p.supportsAckFrequency && (ft == FrameTypeAckFrequency || ft == FrameTypeImmediateAck)) ||
+			(p.legacyAckFrequency && ft == FrameTypeAckFrequency)
 		if !valid {
 			return 0, parsed, &qerr.TransportError{
 				ErrorCode:    qerr.FrameEncodingError,
@@ -63,7 +65,7 @@ func (p *FrameParser) ParseType(b []byte, encLevel protocol.EncryptionLevel) (Fr
 				ErrorMessage: errUnknownFrameType.Error(),
 			}
 		}
-		if !ft.isAllowedAtEncLevel(encLevel) {
+		if !ft.isAllowedAtEncLevel(encLevel) || p.legacyAckFrequency && ft == FrameTypeAckFrequency && encLevel != protocol.Encryption1RTT {
 			return 0, parsed, &qerr.TransportError{
 				ErrorCode:    qerr.FrameEncodingError,
 				FrameType:    typ,
@@ -162,7 +164,11 @@ func (p *FrameParser) ParseLessCommonFrame(frameType FrameType, data []byte, v p
 	case FrameTypeResetStreamAt:
 		frame, l, err = parseResetStreamFrame(data, true, v)
 	case FrameTypeAckFrequency:
-		frame, l, err = parseAckFrequencyFrame(data, v)
+		if p.legacyAckFrequency {
+			frame, l, err = parseLegacyAckFrequencyFrame(data)
+		} else {
+			frame, l, err = parseAckFrequencyFrame(data, v)
+		}
 	case FrameTypeImmediateAck:
 		frame = &ImmediateAckFrame{}
 	default:
@@ -190,3 +196,6 @@ func replaceUnexpectedEOF(e error) error {
 	}
 	return e
 }
+
+// SetLegacyAckFrequency selects the legacy single-byte ignore_order format.
+func (p *FrameParser) SetLegacyAckFrequency(enabled bool) { p.legacyAckFrequency = enabled }

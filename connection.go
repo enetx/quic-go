@@ -532,7 +532,7 @@ func (c *Conn) preSetup(r *pathReceiver) {
 	c.frameParser = *wire.NewFrameParser(
 		c.config.EnableDatagrams,
 		c.config.EnableStreamResetPartialDelivery,
-		false, // ACK_FREQUENCY is not supported yet
+		false, // The newer ACK_FREQUENCY format remains unsupported.
 	)
 	c.rttStats = utils.NewRTTStats()
 	c.connFlowController = newConnectionFlowController(
@@ -2005,6 +2005,8 @@ func (c *Conn) handleFrame(
 	case *wire.StreamsBlockedFrame:
 	case *wire.StopSendingFrame:
 		err = c.streamsMap.HandleStopSendingFrame(frame)
+	case *wire.LegacyAckFrequencyFrame:
+		err = c.receivedPacketHandler.HandleLegacyAckFrequency(frame)
 	case *wire.PingFrame:
 	case *wire.PathChallengeFrame:
 		pathChallenge = frame
