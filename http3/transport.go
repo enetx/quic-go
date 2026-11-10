@@ -139,6 +139,9 @@ var (
 )
 
 func (t *Transport) init() error {
+	if err := t.WireConfig.Validate(); err != nil {
+		return err
+	}
 	if err := t.QPACKConfig.Validate(); err != nil {
 		return err
 	}

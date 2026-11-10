@@ -35,6 +35,16 @@ func (e *RequestPreparationError) Unwrap() error { return e.err }
 // Factories may run concurrently on different connections and must not mutate
 // requests or reenter the transport. Returned payloads are copied before use.
 type WireConfig struct {
+	// RequestBodyBufferSize controls reads from request bodies. Zero uses 8 KiB.
+	RequestBodyBufferSize int
+	// RequestBodyBufferSizePolicy overrides the fixed size for a request body.
+	// It receives ContentLength (-1 if unknown) and must be concurrency safe.
+	// Returning zero selects the default. Valid sizes are at most 16 MiB.
+	RequestBodyBufferSizePolicy func(contentLength int64) int
+	// MaxDataFrameSize limits request DATA payloads. Zero preserves one frame
+	// per Write. This does not control QUIC packet boundaries.
+	MaxDataFrameSize int
+
 	// ControlGreaseFrames runs once per connection, after SETTINGS.
 	ControlGreaseFrames func() ([]GreaseFrame, error)
 	// RequestGreaseFrames runs before each request's HEADERS, on its stream.
@@ -44,6 +54,28 @@ type WireConfig struct {
 	// It never invents a Priority header and is independent of GREASE.
 	// Recognized urgency/incremental parameters are serialized canonically.
 	SendPriorityUpdates bool
+	// CompactPriorityUpdates omits the space after commas in RFC 9218 fields.
+	CompactPriorityUpdates bool
+}
+
+const maxRequestBodyBufferSize = 16 << 20
+
+func validateBodySize(name string, size int) error {
+	if size < 0 || size > maxRequestBodyBufferSize {
+		return fmt.Errorf("http3: %s must be between 0 and %d", name, maxRequestBodyBufferSize)
+	}
+	return nil
+}
+
+// Validate checks allocation and frame size limits without calling factories.
+func (c *WireConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if err := validateBodySize("request body buffer size", c.RequestBodyBufferSize); err != nil {
+		return err
+	}
+	return validateBodySize("maximum DATA frame size", c.MaxDataFrameSize)
 }
 
 func (c *WireConfig) Clone() *WireConfig {
@@ -158,7 +190,7 @@ func recordWireFrames(logger qlogwriter.Recorder, streamID quic.StreamID, data [
 
 func (c *ClientConn) configureWire(config *WireConfig) {
 	if config == nil {
-		return
+		config = &WireConfig{}
 	}
 	c.wireConfig = config.Clone()
 	// Install the control writer before the startup goroutine can send SETTINGS.
@@ -170,6 +202,14 @@ func (c *ClientConn) queuePriorityUpdate(req *http.Request, id quic.StreamID) er
 	if c.wireConfig == nil || !c.wireConfig.SendPriorityUpdates {
 		return nil
 	}
+	u, incremental, explicit := requestPriority(req)
+	if !explicit || u == defaultPriorityUrgency && !incremental {
+		return nil
+	}
+	return c.enqueuePriorityUpdate(id, u, incremental)
+}
+
+func requestPriority(req *http.Request) (int8, bool, bool) {
 	var values []string
 	for _, field := range httpcommon.Sorted(req.Header, httpcommon.Indices(req.Header[httpcommon.HeaderOrderKey]), nil) {
 		if strings.EqualFold(field.Key, "priority") {
@@ -177,22 +217,21 @@ func (c *ClientConn) queuePriorityUpdate(req *http.Request, id quic.StreamID) er
 		}
 	}
 	value := strings.Join(values, ", ")
-	if value == "" {
-		return nil
-	}
 	u, incremental := parsePriority(value)
-	if u == defaultPriorityUrgency && !incremental {
-		return nil
-	}
-	// Serialize the recognized RFC 9218 parameters canonically. The default
-	// urgency is omitted; "i" carries an incremental default-urgency request.
-	value = ""
-	if u != defaultPriorityUrgency {
-		value = "u=" + strconv.Itoa(int(u))
+	return u, incremental, value != ""
+}
+
+func (c *ClientConn) enqueuePriorityUpdate(id quic.StreamID, urgency int8, incremental bool) error {
+	value := ""
+	if urgency != defaultPriorityUrgency {
+		value = "u=" + strconv.Itoa(int(urgency))
 	}
 	if incremental {
 		if value != "" {
-			value += ", "
+			value += ","
+			if !c.wireConfig.CompactPriorityUpdates {
+				value += " "
+			}
 		}
 		value += "i"
 	}

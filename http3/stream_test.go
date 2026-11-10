@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/enetx/quic-go"
 	"github.com/enetx/quic-go/http3/qlog"
 	"github.com/enetx/quic-go/qlogwriter"
+	"github.com/enetx/quic-go/quicvarint"
 	"github.com/enetx/quic-go/testutils/events"
 	"github.com/quic-go/qpack"
 	"github.com/stretchr/testify/require"
@@ -336,4 +338,101 @@ func TestRequestStream(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 6, n)
 	require.Equal(t, []byte("foobar"), b[:n])
+}
+
+// Private stream state is needed to exercise deadlines between DATA headers and payloads.
+func TestStreamBoundedFramesPartialWrites(t *testing.T) {
+	for cut := 0; cut < 18; cut++ {
+		t.Run(strconv.Itoa(cut), func(t *testing.T) {
+			qstr := NewMockDatagramStream(gomock.NewController(t))
+			qstr.EXPECT().StreamID().Return(quic.StreamID(42)).AnyTimes()
+			var out bytes.Buffer
+			expired := true
+			qstr.EXPECT().Write(gomock.Any()).DoAndReturn(func(b []byte) (int, error) {
+				if expired && out.Len()+len(b) > cut {
+					n, _ := out.Write(b[:cut-out.Len()])
+					return n, os.ErrDeadlineExceeded
+				}
+				return out.Write(b)
+			}).AnyTimes()
+			str := newStream(qstr, nil, nil, nil, nil)
+			str.maxDataFrameSize = 4
+			body := []byte("abcdefghijkl")
+			n, err := str.Write(body)
+			require.ErrorIs(t, err, os.ErrDeadlineExceeded)
+			expired = false
+			_, err = str.Write(body[n:])
+			require.NoError(t, err)
+			reader := bytes.NewReader(out.Bytes())
+			var got []byte
+			for reader.Len() > 0 {
+				typ, err := quicvarint.Read(reader)
+				require.NoError(t, err)
+				require.Zero(t, typ)
+				size, err := quicvarint.Read(reader)
+				require.NoError(t, err)
+				require.LessOrEqual(t, size, uint64(4))
+				b := make([]byte, size)
+				_, err = io.ReadFull(reader, b)
+				require.NoError(t, err)
+				got = append(got, b...)
+			}
+			require.Equal(t, body, got)
+		})
+	}
+}
+
+func TestStreamBoundedFramesTryWriteAllAtomic(t *testing.T) {
+	qstr := NewMockDatagramStream(gomock.NewController(t))
+	qstr.EXPECT().StreamID().Return(quic.StreamID(42)).AnyTimes()
+	str := newStream(qstr, nil, nil, nil, nil)
+	str.maxDataFrameSize = 3
+	data := slices.Concat(getDataFrame([]byte("abc")), getDataFrame([]byte("def")), getDataFrame([]byte("g")))
+	qstr.EXPECT().TryWriteAll(data).Return(quic.ErrWouldBlock)
+	require.ErrorIs(t, str.TryWriteAll([]byte("abcdefg")), quic.ErrWouldBlock)
+	qstr.EXPECT().TryWriteAll(data).Return(nil)
+	require.NoError(t, str.TryWriteAll([]byte("abcdefg")))
+}
+
+func TestStreamBoundedFramesTryWriteAllAfterDeadline(t *testing.T) {
+	for cut := 0; cut < 18; cut++ {
+		t.Run(strconv.Itoa(cut), func(t *testing.T) {
+			qstr := NewMockDatagramStream(gomock.NewController(t))
+			qstr.EXPECT().StreamID().Return(quic.StreamID(42)).AnyTimes()
+			var wire bytes.Buffer
+			qstr.EXPECT().Write(gomock.Any()).DoAndReturn(func(b []byte) (int, error) {
+				if wire.Len()+len(b) > cut {
+					n, _ := wire.Write(b[:cut-wire.Len()])
+					return n, os.ErrDeadlineExceeded
+				}
+				return wire.Write(b)
+			}).AnyTimes()
+			s := newStream(qstr, nil, nil, nil, nil)
+			s.maxDataFrameSize = 4
+			body := []byte("abcdefghijkl")
+			n, err := s.Write(body)
+			require.ErrorIs(t, err, os.ErrDeadlineExceeded)
+			before := bytes.Clone(wire.Bytes())
+			qstr.EXPECT().TryWriteAll(gomock.Any()).Return(quic.ErrWouldBlock)
+			require.ErrorIs(t, s.TryWriteAll(body[n:]), quic.ErrWouldBlock)
+			require.Equal(t, before, wire.Bytes())
+			qstr.EXPECT().TryWriteAll(gomock.Any()).DoAndReturn(func(b []byte) error { _, err := wire.Write(b); return err })
+			require.NoError(t, s.TryWriteAll(body[n:]))
+			var got []byte
+			reader := bytes.NewReader(wire.Bytes())
+			for reader.Len() > 0 {
+				kind, err := quicvarint.Read(reader)
+				require.NoError(t, err)
+				require.Zero(t, kind)
+				size, err := quicvarint.Read(reader)
+				require.NoError(t, err)
+				require.LessOrEqual(t, size, uint64(4))
+				b := make([]byte, size)
+				_, err = io.ReadFull(reader, b)
+				require.NoError(t, err)
+				got = append(got, b...)
+			}
+			require.Equal(t, body, got)
+		})
+	}
 }

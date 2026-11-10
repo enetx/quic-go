@@ -1,8 +1,8 @@
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/enetx/g v1.1.1 h1:Lu3l3/Vy51cd52o1V37iCDmE5jAympCWQYHcb7AKlpI=
 github.com/enetx/g v1.1.1/go.mod h1:nVdbiRFOVdOb/TDVPB3gMaMd8161Wv6dQZYdqvg9IHE=
-github.com/enetx/http v1.0.32 h1:SLhQiOUmI83GY2k58ISE1ArW1F7uLth9E2E1UfEQ6P0=
-github.com/enetx/http v1.0.32/go.mod h1:5gUSfUXVty5/7tAZxFKSX4anUMNS2CEf3ekjJFMAHQE=
+github.com/enetx/http v1.0.33 h1:TUPo2dLWA9Brq24+t/E61etCA0sVmZUUWU+PNR1Trxk=
+github.com/enetx/http v1.0.33/go.mod h1:5gUSfUXVty5/7tAZxFKSX4anUMNS2CEf3ekjJFMAHQE=
 github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=
 github.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=
 github.com/jordanlewis/gcassert v0.0.0-20250430164644-389ef753e22e h1:a+PGEeXb+exwBS3NboqXHyxarD9kaboBbrSp+7GuBuc=

@@ -86,11 +86,13 @@ func TestConnectionMigration(t *testing.T) {
 		}
 		return slices.Compact(tuples)
 	}
-	// sentTuples returns the tuples of the packets sent, starting at the given event index.
-	sentTuples := func(since int) []string {
+	// sentStreamTuples checks application-data routing. Late path-validation
+	// responses may legitimately use a nondefault tuple after switching paths.
+	// Probe tuples and connection-ID privacy are checked separately below.
+	sentStreamTuples := func(since int) []string {
 		var tuples []string
 		for _, ev := range clientEvents.Events()[since:] {
-			if e, ok := ev.(qlog.PacketSent); ok {
+			if e, ok := ev.(qlog.PacketSent); ok && hasFrame[*qlog.StreamFrame](e.Frames) {
 				tuples = append(tuples, e.Tuple)
 			}
 		}
@@ -186,7 +188,7 @@ func TestConnectionMigration(t *testing.T) {
 	sendAndReceiveFile(t) // stream 10
 	// the old path is assigned its own tuple, and the default tuple now refers to the new path
 	require.Equal(t, []string{"1", "0", ""}, assignedTuples(&clientEvents))
-	require.Equal(t, []string{""}, sentTuples(n))
+	require.Equal(t, []string{""}, sentStreamTuples(n))
 	// The server switches when it receives the stream data on the new path.
 	// Late packets from the old path might cause it to probe the old path again afterwards.
 	require.Eventually(t, func() bool {
@@ -216,7 +218,7 @@ func TestConnectionMigration(t *testing.T) {
 	require.NoError(t, path2.Switch())
 	sendAndReceiveFile(t) // stream 14
 	require.Equal(t, []string{"1", "0", "", "1", ""}, assignedTuples(&clientEvents))
-	require.Equal(t, []string{""}, sentTuples(n))
+	require.Equal(t, []string{""}, sentStreamTuples(n))
 	require.Eventually(t, func() bool {
 		return slices.Equal([]string{"0", "", "1", ""}, assignedTuples(&serverEvents))
 	}, time.Second, 5*time.Millisecond)

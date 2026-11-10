@@ -141,7 +141,7 @@ func newClientConnWithWire(
 	if len(qpackConfig) > 0 && qpackConfig[0] != nil {
 		c.rawConn.clientQPACK = newClientQPACK(c.rawConn, qpackConfig[0], c.initialSettingsWritten,
 			qpackFeedbackQueueSize(additionalSettings.Get(1).UnwrapOrDefault(), additionalSettings.Get(7).UnwrapOrDefault()))
-		c.requestWriter.beforeHeaders = c.rawConn.clientQPACK.beforeHeaders
+		c.requestWriter.encodeQPACK = c.rawConn.clientQPACK.encode
 		c.requestWriter.qpackConfig = qpackConfig[0].Clone()
 	}
 	c.configureWire(wireConfig)
@@ -152,9 +152,13 @@ func newClientConnWithWire(
 		defer func() {
 			close(c.initialSettingsWritten)
 			if c.initialSettingsErr != nil {
-				c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeInternalError), "invalid control GREASE frames")
+				c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeInternalError), "invalid HTTP/3 client configuration")
 			}
 		}()
+		if err := c.wireConfig.Validate(); err != nil {
+			c.initialSettingsErr = &RequestPreparationError{err}
+			return
+		}
 		if c.wireConfig != nil && c.wireConfig.ControlGreaseFrames != nil {
 			frames, err := c.wireConfig.ControlGreaseFrames()
 			if err == nil {
@@ -185,13 +189,13 @@ func newClientConnWithWire(
 
 // OpenRequestStream opens a new request stream on the HTTP/3 connection.
 func (c *ClientConn) OpenRequestStream(ctx context.Context) (*RequestStream, error) {
-	return c.openRequestStream(ctx, c.requestWriter, nil, c.disableCompression, c.maxResponseHeaderBytes)
+	return c.openRequestStream(ctx, c.requestWriter, make(chan struct{}), c.disableCompression, c.maxResponseHeaderBytes)
 }
 
 func (c *ClientConn) openRequestStream(
 	ctx context.Context,
 	requestWriter *requestWriter,
-	reqDone chan<- struct{},
+	reqDone chan struct{},
 	disableCompression bool,
 	maxHeaderBytes int,
 ) (*RequestStream, error) {
@@ -229,7 +233,7 @@ func (c *ClientConn) openRequestStream(
 	decoder := bindFieldDecoder(c.decoder, c.rawConn, ctx, hstr, c.maxResponseHeaderBytes)
 	rsp := &http.Response{}
 	trace := httptrace.ContextClientTrace(ctx)
-	return newRequestStream(
+	stream := newRequestStream(
 		newStream(hstr, c.rawConn, trace, func(r io.Reader, hf *headersFrame) error {
 			hdr, err := decodeTrailers(r, hf, maxHeaderBytes, decoder, c.qlogger, str.StreamID())
 			if err != nil {
@@ -244,7 +248,15 @@ func (c *ClientConn) openRequestStream(
 		disableCompression,
 		maxHeaderBytes,
 		rsp,
-	), nil
+	)
+	if c.wireConfig != nil {
+		stream.str.maxDataFrameSize = c.wireConfig.MaxDataFrameSize
+		stream.bodyBufferSize = c.wireConfig.RequestBodyBufferSize
+		stream.bodyBufferSizePolicy = c.wireConfig.RequestBodyBufferSizePolicy
+	}
+	stream.priorityUpdater = &PriorityUpdater{request: ctx, connection: c.conn.Context(), done: reqDone,
+		send: func(u int8, incremental bool) error { return c.enqueuePriorityUpdate(str.StreamID(), u, incremental) }}
+	return stream, nil
 }
 
 func (c *ClientConn) handleUnidirectionalStream(str *quic.ReceiveStream) {
@@ -446,7 +458,11 @@ func (r *cancelingReader) Read(b []byte) (int, error) {
 
 func (c *ClientConn) sendRequestBody(str *RequestStream, body io.ReadCloser, contentLength int64) error {
 	defer body.Close()
-	buf := make([]byte, bodyCopyBufferSize)
+	size := str.bodyBufferSize
+	if size == 0 {
+		size = bodyCopyBufferSize
+	}
+	buf := make([]byte, size)
 	sr := &cancelingReader{str: str, r: body}
 	if contentLength == -1 {
 		_, err := io.CopyBuffer(str, sr, buf)

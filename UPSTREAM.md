@@ -18,8 +18,6 @@ defaults. All profiles, template construction, GREASE policy and extension value
 belong in Surf. No uTLS or QPACK fork was introduced, and QUIC does not depend on
 uTLS. `tlsquic` is a small interface using standard-library TLS event types.
 Surf implements the adapter using official `refraction-networking/utls`.
-HTTPcloak was inspected as a design reference; its transport, TLS and QPACK
-implementations were not imported.
 
 `Config.ClientHandshake == nil` preserves upstream client behavior. Servers keep
 the upstream TLS path. Controls are per configuration/connection, never globals.
@@ -111,13 +109,17 @@ are bounded. Cancellation, deadlines, connection shutdown and critical-stream
 errors retain native QUIC semantics. Zero capacity keeps the upstream static path.
 RFC Appendix B vectors, fragmented instructions, table eviction/wrap, blocked
 streams, errors, cancellation and real HTTP/3 client/server exchanges are tested.
-Outbound encoding remains static: this is not a browser QPACK indexing policy.
+Outbound dynamic encoding now lives in `internal/qpack/encoder.go`. It reuses
+official static-table entries and x/net Huffman coding, without another dependency
+fork. Generic options select indexing, strings, Base, instruction names, draining,
+and bounded outstanding sections; browser choices remain in Surf.
 
 `http3.QPACKConfig` optionally reserves encoder/decoder streams in application
 order, sends their types eagerly or with their first instruction, and queues an
 encoder capacity announcement after SETTINGS or with the next HEADERS block.
 The value never exceeds the peer's limit or the configured local budget; absent
-or zero peer capacity produces no instruction. One writer per critical stream
+or zero peer capacity keeps requests static. Zero announcements are optional.
+One writer per critical stream
 preserves instruction order and respects flow control without blocking request
 headers or the control parser. Feedback queues remain bounded. Nil configuration
 retains native behavior, and server behavior is unchanged. Browser values and
@@ -140,9 +142,35 @@ that capability unadvertised. Explicit native v2 connections remain supported.
 Neqo's legacy min_ack_delay codepoint (`0xff02de1a`, mislabeled GREASE by the
 fingerprint endpoint) is likewise not advertised: the native ACK_FREQUENCY parser
 has no receiver implementation and its newer last-field semantics differ.
-ACK ratio/frequency, packet scheduling/coalescing, congestion/loss behavior,
-resource-specific priority policy and dynamic outbound QPACK still differ from
-browser engines. Browser defaults and workaround decisions belong in Surf.
+ACK ratio/frequency, packet scheduling/coalescing, congestion/loss behavior and
+resource-specific priority policy still differ from browser engines. Browser
+defaults and workaround decisions belong in Surf.
+
+The outgoing encoder commits a section only after its complete instruction batch
+is accepted by the bounded writer. Backpressure falls back to static encoding,
+without references to unsent insertions. Eviction protects unacknowledged entries,
+outstanding references and references acquired in the current section. RIC modulo
+uses the peer's SETTINGS maximum independently from the chosen capacity. Feedback
+is FIFO per stream, with separate section ACK, cancellation and increment handling.
+Request trailers share the connection encoder and deterministic header ordering.
+Without encoder-stream credit, sections remain static until the critical stream
+can open; queued capacity instructions cannot create references to unsendable data.
+
+State management was cross-checked against the independent Go implementation in
+[`mach`](https://github.com/Lemon4ksan/mach/tree/17ea25018f3b1d8a2810f4f409974d225a6eb2bb/proto/codec/qpack)
+and RFC 9204. It is a reference, not a new module dependency. The implementation
+remains isolated here; static/Huffman tables and browser policies are not copied.
+
+`tests/qpack/encoder_test.go` and `encoder_fuzz_test.go` cover native static bytes,
+independent wire vectors, Huffman/N bits, both Base forms, wrapping, eviction,
+duplication, tracking/blocking budgets, backpressure rollback, partial/invalid
+feedback, concurrency and options. `tests/http3/qpack_encoder_test.go` exercises
+real HTTP/3 connections, concurrent bodies/trailers and connection-level errors.
+Surf's separate browser audit compares raw QPACK blocks and encoder instructions.
+
+The connection-migration regression checks STREAM packet tuples after a switch;
+late validation responses may still use a nondefault tuple. Explicit probe,
+packet-count, address and connection-ID unlinkability assertions are retained.
 
 Client receive ACK policy is now configurable: initial/decimated packet thresholds,
 transition by packet-number span, RTT-scaled delay and floor, fixed earliest deadline,

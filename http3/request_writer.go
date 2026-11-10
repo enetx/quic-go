@@ -25,7 +25,8 @@ import (
 const bodyCopyBufferSize = 8 * 1024
 
 type requestWriter struct {
-	beforeHeaders        func() error
+	encodeQPACK          func(quic.StreamID, []qpack.HeaderField) ([]byte, error)
+	qpackFields          []qpack.HeaderField
 	beforeRequestHeaders func(*http.Request, quic.StreamID) error
 	greaseFrames         func(*http.Request) ([]GreaseFrame, error)
 	qpackConfig          *QPACKConfig
@@ -61,13 +62,17 @@ func (w *requestWriter) writeHeaders(wr io.Writer, req *http.Request, gzip bool,
 	defer w.mutex.Unlock()
 	defer w.encoder.Close()
 	defer w.headerBuf.Reset()
+	defer func() { clear(w.qpackFields); w.qpackFields = w.qpackFields[:0] }()
 
 	var trailers string
 	if len(req.Trailer) > 0 {
 		keys := make([]string, 0, len(req.Trailer))
-		for k := range req.Trailer {
-			if httpguts.ValidTrailerHeader(k) {
-				keys = append(keys, k)
+		for _, kv := range httpcommon.Sorted(req.Trailer, httpcommon.Indices(req.Trailer[httpcommon.HeaderOrderKey]), nil) {
+			if !httpguts.ValidHeaderFieldName(kv.Key) {
+				return fmt.Errorf("invalid HTTP trailer name %q", kv.Key)
+			}
+			if httpguts.ValidTrailerHeader(kv.Key) {
+				keys = append(keys, kv.Key)
 			}
 		}
 		trailers = strings.Join(keys, ", ")
@@ -88,15 +93,17 @@ func (w *requestWriter) writeHeaders(wr io.Writer, req *http.Request, gzip bool,
 			return &RequestPreparationError{err}
 		}
 	}
-	if w.beforeHeaders != nil {
-		if err := w.beforeHeaders(); err != nil {
-			return &RequestPreparationError{err}
-		}
-	}
 	if w.beforeRequestHeaders != nil {
 		if err := w.beforeRequestHeaders(req, streamID); err != nil {
 			return &RequestPreparationError{err}
 		}
+	}
+	if w.encodeQPACK != nil {
+		block, err := w.encodeQPACK(streamID, w.qpackFields)
+		if err != nil {
+			return &RequestPreparationError{err}
+		}
+		w.headerBuf.Write(block)
 	}
 	if len(grease) > 0 {
 		recordWireFrames(qlogger, streamID, grease)
@@ -399,10 +406,40 @@ func shouldSendReqContentLength(method string, contentLength int64) bool {
 // WriteRequestTrailer writes HTTP trailers to the stream.
 // It should be called after the request body has been fully written.
 func (w *requestWriter) WriteRequestTrailer(wr io.Writer, req *http.Request, streamID quic.StreamID, qlogger qlogwriter.Recorder) error {
-	if w.beforeHeaders != nil {
-		if err := w.beforeHeaders(); err != nil {
+	if w.encodeQPACK != nil {
+		var fields []qpack.HeaderField
+		var logged []qlog.HeaderField
+		for _, kv := range httpcommon.Sorted(req.Trailer, httpcommon.Indices(req.Trailer[httpcommon.HeaderOrderKey]), nil) {
+			if !httpguts.ValidHeaderFieldName(kv.Key) {
+				return fmt.Errorf("invalid HTTP trailer name %q", kv.Key)
+			}
+			if !httpguts.ValidTrailerHeader(kv.Key) {
+				continue
+			}
+			name := strings.ToLower(kv.Key)
+			for _, value := range kv.Values {
+				if !httpguts.ValidHeaderFieldValue(value) {
+					return fmt.Errorf("invalid HTTP trailer value %q for header %q", value, kv.Key)
+				}
+				fields = append(fields, qpack.HeaderField{Name: name, Value: value})
+				if qlogger != nil {
+					logged = append(logged, qlog.HeaderField{Name: name, Value: value})
+				}
+			}
+		}
+		if len(fields) == 0 {
+			return nil
+		}
+		block, err := w.encodeQPACK(streamID, fields)
+		if err != nil {
 			return err
 		}
+		frame := (&headersFrame{Length: uint64(len(block))}).Append(nil)
+		if qlogger != nil {
+			qlogCreatedHeadersFrame(qlogger, streamID, len(frame)+len(block), len(block), logged)
+		}
+		_, err = wr.Write(append(frame, block...))
+		return err
 	}
 	_, err := writeTrailers(wr, req.Trailer, streamID, qlogger)
 	return err

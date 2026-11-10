@@ -33,3 +33,27 @@ func TestHTTP3PriorityUpdateCanonicalAndSortedHeaders(t *testing.T) {
 		require.Equal(t, tc.want, string(payload[n:]))
 	}
 }
+
+func TestHTTP3LivePriorityLowLevel(t *testing.T) {
+	p := newQPACKStartupPair(t, nil, nil)
+	control := wireControl(t, p)
+	stream, err := p.h3.OpenRequestStream(p.ctx)
+	require.NoError(t, err)
+	require.Error(t, stream.UpdatePriority(1, false))
+	request, _ := http.NewRequestWithContext(p.ctx, "GET", "https://localhost/", nil)
+	require.NoError(t, stream.SendRequestHeader(request))
+	require.NoError(t, stream.UpdatePriority(3, false))
+	require.NoError(t, stream.UpdatePriority(1, true))
+	require.NoError(t, stream.UpdatePriority(1, true))
+	require.NoError(t, stream.UpdatePriority(3, false))
+	for _, want := range []string{"u=1, i", ""} {
+		kind, payload := readWireFrame(t, control)
+		require.EqualValues(t, 0xf0700, kind)
+		id, n, err := quicvarint.Parse(payload)
+		require.NoError(t, err)
+		require.EqualValues(t, stream.StreamID(), id)
+		require.Equal(t, want, string(payload[n:]))
+	}
+	stream.CancelRead(0x10c)
+	require.ErrorIs(t, stream.UpdatePriority(0, true), http3.ErrRequestCompleted)
+}

@@ -7,10 +7,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/enetx/quic-go"
 	dynamic "github.com/enetx/quic-go/internal/qpack"
 	"github.com/enetx/quic-go/quicvarint"
+	base "github.com/quic-go/qpack"
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -30,14 +32,48 @@ const (
 	QPACKCapacityBeforeHeaders
 )
 
+type (
+	QPACKHuffmanMode  = dynamic.HuffmanMode
+	QPACKIndexingMode = dynamic.IndexingMode
+)
+
+const (
+	QPACKHuffmanDefault = dynamic.HuffmanDefault
+	QPACKHuffmanAuto    = dynamic.HuffmanAuto
+	QPACKHuffmanAlways  = dynamic.HuffmanAlways
+	QPACKHuffmanNever   = dynamic.HuffmanNever
+	QPACKIndexAll       = dynamic.IndexAll
+	QPACKIndexNewNames  = dynamic.IndexNewNames
+	QPACKIndexNone      = dynamic.IndexNone
+)
+
 // QPACKConfig controls client streams, capacity announcements and request fields.
-// Nil preserves native behavior. It does not enable dynamic request encoding:
-// outgoing field sections still have zero Required Insert Count.
+// Nil preserves native behavior. Dynamic request compression is explicitly opt-in.
 type QPACKConfig struct {
+	DynamicTable bool
+	Huffman      QPACKHuffmanMode
+	Indexing     QPACKIndexingMode
+	// IndexingPolicy controls insertion of new entries; existing references remain
+	// usable. Called under encoder locks; must not reenter the transport.
+	IndexingPolicy func(name, value string) bool
+	// DrainingFraction reserves this fraction of table space for eviction.
+	// Draining exact entries can be duplicated while their old references drain.
+	DrainingFraction float64
+	// PostBaseReferences fixes Base before this section's insertions. Otherwise
+	// Base equals Required Insert Count and all references are Base-relative.
+	PostBaseReferences bool
+	// LiteralInsertNames disables name references in Insert instructions.
+	LiteralInsertNames bool
+	// StopOnInsertionFailure stops new insertion attempts for the rest of a
+	// section after the first entry cannot fit. Existing references remain usable.
+	StopOnInsertionFailure bool
+	// MaxTrackedSections bounds outstanding dynamic section bookkeeping. Zero
+	// selects 4096; at the limit new sections use static encoding without waiting.
+	MaxTrackedSections uint64
 	// SplitCookies emits one field per nonempty cookie-pair, preserving order.
 	SplitCookies bool
 	// NeverIndex emits these lowercase field names as literals with N=1.
-	// This controls representations, not dynamic request compression.
+	// These fields bypass the dynamic table entirely.
 	NeverIndex []string
 	// StreamOrder reserves these streams after the control stream, in order,
 	// while stream credit permits. Omitted streams are opened on demand.
@@ -46,8 +82,12 @@ type QPACKConfig struct {
 	// Otherwise the type is sent with the first instruction on that stream.
 	EagerStreamTypes bool
 	// EncoderTableCapacity bounds the capacity announced to the peer. Zero
-	// disables announcements. The actual value is capped by peer SETTINGS.
+	// disables dynamic insertion. The actual value is capped by peer SETTINGS;
+	// EncoderZeroCapacity separately controls explicit zero announcements.
 	EncoderTableCapacity uint64
+	// EncoderZeroCapacity sends a capacity-zero instruction even when the peer
+	// offers no table, initializing an otherwise lazy encoder stream.
+	EncoderZeroCapacity bool
 	// EncoderCapacityTiming selects immediate queuing after SETTINGS or queuing
 	// while encoding the next HEADERS block. Network delivery remains asynchronous.
 	EncoderCapacityTiming QPACKCapacityTiming
@@ -68,6 +108,9 @@ func (q *QPACKConfig) Clone() *QPACKConfig {
 func (q *QPACKConfig) Validate() error {
 	if q == nil {
 		return nil
+	}
+	if err := q.encoderOptions().Validate(); err != nil {
+		return fmt.Errorf("http3: invalid QPACK encoder options: %w", err)
 	}
 	for _, name := range q.NeverIndex {
 		if name != strings.ToLower(name) || !httpguts.ValidHeaderFieldName(strings.TrimPrefix(name, ":")) {
@@ -93,12 +136,13 @@ func (q *QPACKConfig) Validate() error {
 // Each critical stream has one writer. A blocked stream cannot block the control
 // stream parser or request headers; the bounded queue retains instruction order.
 type clientQPACKStream struct {
-	owner  *rawConn
-	typ    QPACKStreamType
-	stream *quic.SendStream // reserved before ready is closed, then owned by run
-	queue  chan []byte
-	ready  <-chan struct{}
-	eager  bool // set before ready is closed
+	owner    *rawConn
+	typ      QPACKStreamType
+	stream   *quic.SendStream // reserved before ready is closed, then owned by run
+	queue    chan []byte
+	ready    <-chan struct{}
+	eager    bool        // set before ready is closed
+	reserved atomic.Bool // stream credit exists before admitting dynamic references
 }
 
 func (s *clientQPACKStream) enqueue(data []byte) error {
@@ -151,6 +195,7 @@ func (s *clientQPACKStream) run() {
 				return
 			}
 			s.watch()
+			s.reserved.Store(true)
 		}
 		if !typeSent {
 			data = append(quicvarint.Append(nil, uint64(s.typ)), data...)
@@ -168,11 +213,20 @@ type clientQPACK struct {
 	encoder, decoder *clientQPACKStream
 	mutex            sync.Mutex
 	pendingCapacity  uint64
+	capacityPending  bool
+	fieldEncoder     *dynamic.Encoder
+}
+
+func (q *QPACKConfig) encoderOptions() dynamic.EncoderOptions {
+	return dynamic.EncoderOptions{DynamicTable: q.DynamicTable, Huffman: q.Huffman, Indexing: q.Indexing,
+		IndexingPolicy: q.IndexingPolicy, DrainingFraction: q.DrainingFraction, PostBaseReferences: q.PostBaseReferences,
+		LiteralInsertNames: q.LiteralInsertNames, MaxTrackedSections: q.MaxTrackedSections,
+		StopOnInsertionFailure: q.StopOnInsertionFailure}
 }
 
 func newClientQPACK(owner *rawConn, config *QPACKConfig, ready <-chan struct{}, queueSize int) *clientQPACK {
-	q := &clientQPACK{config: config.Clone()}
-	q.encoder = &clientQPACKStream{owner: owner, typ: QPACKEncoderStream, ready: ready, queue: make(chan []byte, 2)}
+	q := &clientQPACK{config: config.Clone(), fieldEncoder: dynamic.NewEncoder(config.encoderOptions())}
+	q.encoder = &clientQPACKStream{owner: owner, typ: QPACKEncoderStream, ready: ready, queue: make(chan []byte, 64)}
 	q.decoder = &clientQPACKStream{owner: owner, typ: QPACKDecoderStream, ready: ready, queue: make(chan []byte, queueSize)}
 	go q.encoder.run()
 	go q.decoder.run()
@@ -197,6 +251,7 @@ func (q *clientQPACK) prepare() error {
 		}
 		s.stream = stream
 		s.watch()
+		s.reserved.Store(true)
 	}
 	if q.config.EagerStreamTypes {
 		for _, typ := range q.config.StreamOrder {
@@ -210,29 +265,49 @@ func (q *clientQPACK) prepare() error {
 	return nil
 }
 
-func (q *clientQPACK) onSettings(capacity uint64) error {
+func (q *clientQPACK) onSettings(capacity, blockedStreams uint64) error {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 	q.pendingCapacity = min(capacity, q.config.EncoderTableCapacity)
+	q.capacityPending = q.pendingCapacity > 0 || q.config.EncoderZeroCapacity
+	if err := q.fieldEncoder.Configure(capacity, q.pendingCapacity, blockedStreams); err != nil {
+		return err
+	}
 	if q.config.EncoderCapacityTiming == QPACKCapacityOnSettings {
 		return q.flushCapacity()
 	}
 	return nil
 }
 
-func (q *clientQPACK) beforeHeaders() error {
+func (q *clientQPACK) encode(streamID quic.StreamID, fields []base.HeaderField) ([]byte, error) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
-	return q.flushCapacity()
+	if err := q.flushCapacity(); err != nil {
+		return nil, err
+	}
+	input := make([]dynamic.Field, len(fields))
+	for i, field := range fields {
+		input[i] = dynamic.Field{Name: field.Name, Value: field.Value, NeverIndex: slices.Contains(q.config.NeverIndex, field.Name)}
+	}
+	return q.fieldEncoder.Encode(uint64(streamID), input, func(data []byte) error {
+		if !q.encoder.reserved.Load() {
+			return dynamic.ErrEncoderBlocked
+		}
+		if err := q.encoder.enqueue(data); errors.Is(err, errQPACKFeedbackBacklog) {
+			return dynamic.ErrEncoderBlocked
+		} else {
+			return err
+		}
+	})
 }
 
 func (q *clientQPACK) flushCapacity() error {
-	if q.pendingCapacity == 0 {
-		return nil // No instructions are permitted while the peer's limit is zero.
+	if !q.capacityPending {
+		return nil
 	}
 	if err := q.encoder.enqueue(dynamic.AppendEncoderCapacity(nil, q.pendingCapacity)); err != nil {
 		return err
 	}
-	q.pendingCapacity = 0
+	q.capacityPending = false
 	return nil
 }

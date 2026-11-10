@@ -8,10 +8,14 @@ import (
 	"golang.org/x/net/http2/hpack"
 )
 
-// writeQPACKField delegates all table selection and Huffman encoding to the
-// official static encoder. The small adapter changes only the literal N bit,
-// expanding an exact static reference into a literal when necessary (RFC 9204).
+// Configured clients collect fields for atomic connection-level encoding.
+// The native path retains the official static encoder; its small adapter changes
+// only the N bit or expands an exact reference into a literal when necessary.
 func (w *requestWriter) writeQPACKField(name, value string) error {
+	if w.encodeQPACK != nil {
+		w.qpackFields = append(w.qpackFields, qpack.HeaderField{Name: name, Value: value})
+		return nil
+	}
 	start := w.headerBuf.Len()
 	if err := w.encoder.WriteField(qpack.HeaderField{Name: name, Value: value}); err != nil {
 		return err

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/enetx/http"
+	"github.com/enetx/quic-go"
 	"github.com/enetx/quic-go/quicvarint"
 	base "github.com/quic-go/qpack"
 	"github.com/stretchr/testify/require"
@@ -106,4 +107,37 @@ func TestHTTP3RequestFactoryErrorsDoNotWriteFrames(t *testing.T) {
 		require.NoError(t, err)
 		require.EqualValues(t, 33, kind)
 	}
+}
+
+func TestQPACKTrailersUseConnectionEncoderAndOrder(t *testing.T) {
+	w := newRequestWriter()
+	var sections [][]base.HeaderField
+	w.encodeQPACK = func(id quic.StreamID, fields []base.HeaderField) ([]byte, error) {
+		sections = append(sections, append([]base.HeaderField(nil), fields...))
+		var encoded bytes.Buffer
+		encoder := base.NewEncoder(&encoded)
+		for _, field := range fields {
+			if err := encoder.WriteField(field); err != nil {
+				return nil, err
+			}
+		}
+		return encoded.Bytes(), nil
+	}
+	req, err := http.NewRequest("POST", "https://localhost/", nil)
+	require.NoError(t, err)
+	req.Trailer = http.Header{"X-A": []string{"first", "second"}, "X-Z": []string{"last"}, "Header-Order:": []string{"x-z", "x-a"}}
+	original := req.Trailer.Clone()
+	var wire bytes.Buffer
+	require.NoError(t, w.WriteRequestHeader(&wire, req, false, 0, nil))
+	require.NoError(t, w.WriteRequestTrailer(&wire, req, 0, nil))
+	require.Len(t, sections, 2)
+	require.Contains(t, sections[0], base.HeaderField{Name: "trailer", Value: "X-Z, X-A"})
+	require.Equal(t, []base.HeaderField{{Name: "x-z", Value: "last"}, {Name: "x-a", Value: "first"}, {Name: "x-a", Value: "second"}}, sections[1])
+	require.Equal(t, original, req.Trailer)
+	req.Trailer["X-Z"] = []string{"invalid\nvalue"}
+	require.ErrorContains(t, w.WriteRequestTrailer(&wire, req, 0, nil), "trailer value")
+	require.Len(t, sections, 2, "invalid trailers must not reach the stateful encoder")
+	req.Trailer = http.Header{"bad name": []string{"value"}}
+	require.ErrorContains(t, w.WriteRequestHeader(&wire, req, false, 4, nil), "trailer name")
+	require.Len(t, sections, 2)
 }

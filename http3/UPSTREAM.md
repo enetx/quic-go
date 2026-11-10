@@ -62,10 +62,12 @@ part of a 25ms shutdown timing tolerance. Preserve this synchronization when
 merging upstream tests.
 
 `QPACKConfig.SplitCookies` and `NeverIndex` control request field representations.
-The official static QPACK encoder is retained: the adapter only changes the N bit
-or expands an exact static reference into a literal name reference. No new QPACK
-or TLS fork is required. Outgoing dynamic compression is still not implemented.
-All browser values, random distributions and policy selection remain in Surf.
+Nil configuration retains the official static encoder. Optional client encoding
+uses the isolated `internal/qpack/encoder.go` with the official static table and
+Huffman codec. No new QPACK or TLS dependency fork is required. All browser values,
+random distributions and policy selection remain in Surf. The client adapter owns
+ordered bounded instruction queues, negotiates peer capacity/blocking limits and
+passes decoder feedback to the connection encoder. Headers and trailers share it.
 
 `tests/http3/wire_config_test.go` covers independent GREASE/priority settings,
 real stream IDs across requests, bounded queues, startup errors and critical-stream
@@ -97,7 +99,10 @@ The fork follows the current `NewCapsuleParser` / `CapsuleReader` API,
 - `../tests/qpack/` and `../tests/http3/qpack_test.go`: RFC 9204 dynamic
   receive tables, all field representations, blocking, eviction, feedback,
   cancellation/deadlines, bounded decoding and real client/server requests.
-  Outbound encoding remains the official static encoder.
+  Outgoing dynamic encoding adds independent wire vectors, both Base forms,
+  bounded references, ACK/cancel/increment state, draining, rollback and fuzz cases.
+- `../tests/http3/qpack_encoder_test.go`: real outgoing dynamic requests,
+  parallel bodies/trailers, zero-capacity fallback and invalid decoder feedback.
 - `../tests/http3/qpack_client_test.go`: configurable stream reservation order,
   eager/lazy type bytes, immediate/deferred capacity announcements, zero/omitted
   peer limits, backpressure, immutable snapshots and critical stream errors.
@@ -109,3 +114,28 @@ against the published version, or using a temporary Go workspace during developm
 go test -race ./...
 go vet ./...
 ```
+
+## Request body and live priority controls
+
+`WireConfig.RequestBodyBufferSize` and `RequestBodyBufferSizePolicy` select
+request body reads; `MaxDataFrameSize` caps DATA payloads without controlling QUIC
+packetization. Zero preserves native sizing/framing. Size validation runs before
+HEADERS/QPACK state changes. `Stream.Write` retains unfinished-frame handling;
+`TryWriteAll` queues all capped frames atomically or leaves its state unchanged.
+Browser sizing policy stays in Surf.
+
+`WithPriorityUpdateHandler` publishes a concurrency-safe per-attempt updater after
+HEADERS. `RequestStream.UpdatePriority` exposes it for low-level users. Updates
+share the bounded connection control writer, suppress repeated values only after
+successful queue admission, support a default-priority reset, and stop on response
+completion, cancellation or connection closure. `CompactPriorityUpdates` controls
+serialization only. Local `SetPriority` scheduling remains independent. Nil wire
+configuration now installs the bounded writer to allow explicit live updates;
+no extra control frames are emitted without a caller request.
+
+`tests/http3/request_body_test.go` covers body reads, framing, unknown lengths and
+policy failures. Private stream tests cover every partial header/payload deadline
+and atomic retry. Priority tests cover real control frames, deduplication, reset,
+cancellation and deterministic queue backpressure. Surf additionally verifies
+browser-profile sizing, TLS 0-RTT with standard TLS, GOAWAY and changed SETTINGS
+across fresh QPACK connections. No browser values or TLS fork are added here.

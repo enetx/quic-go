@@ -45,6 +45,7 @@ type Stream struct {
 	// the DATA frame being written: the unwritten part of its header, and the payload bytes still to write
 	frameHeader           []byte
 	bytesUnwrittenInFrame uint64
+	maxDataFrameSize      int
 
 	qlogger qlogwriter.Recorder
 
@@ -135,6 +136,26 @@ func (s *Stream) hasUnfinishedFrame() bool {
 //
 // It can only be used after the response header has been sent.
 func (s *Stream) Write(b []byte) (int, error) {
+	if s.maxDataFrameSize <= 0 || len(b) <= s.maxDataFrameSize {
+		return s.writeDataFrame(b)
+	}
+	var written int
+	for len(b) > 0 {
+		chunk := b[:min(len(b), s.maxDataFrameSize)]
+		n, err := s.writeDataFrame(chunk)
+		written += n
+		if err != nil {
+			return written, err
+		}
+		if n != len(chunk) {
+			return written, io.ErrShortWrite
+		}
+		b = b[n:]
+	}
+	return written, nil
+}
+
+func (s *Stream) writeDataFrame(b []byte) (int, error) {
 	if !s.addQlogProducer() {
 		return s.writeUnframed(nil)
 	}
@@ -203,26 +224,32 @@ func (s *Stream) TryWriteAll(b []byte) error {
 	data := make([]byte, 0, len(s.frameHeader)+frameHeaderLen+len(b))
 	data = append(data, s.frameHeader...)
 	data = append(data, b[:completed]...)
-	frameStart := len(data)
+	type createdFrame struct{ length, payload int }
+	var frames []createdFrame
 	rest := b[completed:]
-	if len(rest) > 0 {
-		data = (&dataFrame{Length: uint64(len(rest))}).Append(data)
-		data = append(data, rest...)
+	for len(rest) > 0 {
+		size := len(rest)
+		if s.maxDataFrameSize > 0 {
+			size = min(size, s.maxDataFrameSize)
+		}
+		start := len(data)
+		data = (&dataFrame{Length: uint64(size)}).Append(data)
+		data = append(data, rest[:size]...)
+		if s.qlogger != nil {
+			frames = append(frames, createdFrame{len(data) - start, size})
+		}
+		rest = rest[size:]
 	}
+	// Queue all frames atomically, including any unfinished frame header.
 	if err := s.datagramStream.TryWriteAll(data); err != nil {
 		return maybeReplaceError(err)
 	}
 	s.frameHeader = s.frameHeader[:0]
 	s.bytesUnwrittenInFrame -= completed
-	if s.qlogger != nil && len(rest) > 0 {
-		s.qlogger.RecordEvent(qlog.FrameCreated{
-			StreamID: s.StreamID(),
-			Raw: qlog.RawInfo{
-				Length:        len(data) - frameStart,
-				PayloadLength: len(rest),
-			},
-			Frame: qlog.Frame{Frame: qlog.DataFrame{}},
-		})
+	for _, frame := range frames {
+		s.qlogger.RecordEvent(qlog.FrameCreated{StreamID: s.StreamID(),
+			Raw:   qlog.RawInfo{Length: frame.length, PayloadLength: frame.payload},
+			Frame: qlog.Frame{Frame: qlog.DataFrame{}}})
 	}
 	return nil
 }
@@ -282,7 +309,10 @@ func (s *Stream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 // MASQUE proxying protocols.
 // Stream and application errors are returned as *[Error], possibly wrapped.
 type RequestStream struct {
-	str *Stream
+	str                  *Stream
+	bodyBufferSize       int
+	bodyBufferSizePolicy func(int64) int
+	priorityUpdater      *PriorityUpdater
 
 	responseBody io.ReadCloser // set by ReadResponse
 
@@ -302,7 +332,7 @@ type RequestStream struct {
 func newRequestStream(
 	str *Stream,
 	requestWriter *requestWriter,
-	reqDone chan<- struct{},
+	reqDone chan struct{},
 	decoder fieldDecoder,
 	disableCompression bool,
 	maxHeaderBytes int,
@@ -369,6 +399,11 @@ func (s *RequestStream) Close() error {
 // CancelRead aborts receiving on this stream.
 // See [quic.Stream.CancelRead] for more details.
 func (s *RequestStream) CancelRead(errorCode quic.StreamErrorCode) {
+	if p := s.priorityUpdater; p != nil {
+		p.mu.Lock()
+		p.closed = true
+		p.mu.Unlock()
+	}
 	s.str.CancelRead(errorCode)
 }
 
@@ -437,6 +472,17 @@ func (s *RequestStream) sendRequestHeader(req *http.Request) error {
 	if s.sentRequest {
 		return errors.New("http3: invalid duplicate use of RequestStream.SendRequestHeader")
 	}
+	if req.Body != nil && req.Body != http.NoBody && s.bodyBufferSizePolicy != nil {
+		length := req.ContentLength
+		if length == 0 {
+			length = -1
+		}
+		size := s.bodyBufferSizePolicy(length)
+		if err := validateBodySize("request body buffer policy result", size); err != nil {
+			return &RequestPreparationError{err}
+		}
+		s.bodyBufferSize = size
+	}
 	if !s.disableCompression && req.Method != http.MethodHead &&
 		req.Header.Get("Accept-Encoding") == "" && req.Header.Get("Range") == "" {
 		s.requestedGzip = true
@@ -444,7 +490,20 @@ func (s *RequestStream) sendRequestHeader(req *http.Request) error {
 	s.isConnect = req.Method == http.MethodConnect
 	s.isHead = req.Method == http.MethodHead
 	s.sentRequest = true
-	return maybeReplaceError(s.requestWriter.WriteRequestHeader(s.str.datagramStream, req, s.requestedGzip, s.str.StreamID(), s.str.qlogger))
+	err := maybeReplaceError(s.requestWriter.WriteRequestHeader(s.str.datagramStream, req, s.requestedGzip, s.str.StreamID(), s.str.qlogger))
+	if err != nil {
+		return err
+	}
+	if p := s.priorityUpdater; p != nil {
+		p.mu.Lock()
+		p.urgency, p.incremental, _ = requestPriority(req)
+		p.ready = true
+		p.mu.Unlock()
+		if handler, _ := req.Context().Value(priorityUpdateHandlerKey{}).(func(*PriorityUpdater)); handler != nil {
+			handler(p)
+		}
+	}
+	return nil
 }
 
 // sendRequestTrailer sends request trailers to the stream.

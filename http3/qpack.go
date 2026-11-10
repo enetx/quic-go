@@ -84,6 +84,8 @@ func (c *rawConn) handleQPACKStream(stream *quic.ReceiveStream, encoder bool) {
 	if encoder {
 		code = ErrCodeQPACKEncoderStreamError
 		err = c.qpackDecoder.ReadEncoder(stream)
+	} else if c.clientQPACK != nil {
+		err = c.clientQPACK.fieldEncoder.ReadDecoder(stream)
 	} else {
 		err = dynamic.ReadDecoder(stream)
 	}

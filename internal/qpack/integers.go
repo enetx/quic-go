@@ -1,5 +1,6 @@
-// Package qpack adds RFC 9204 dynamic decoding to the official static codec.
-// It contains no browser policy. Limits come from the local HTTP/3 SETTINGS.
+// Package qpack adds RFC 9204 dynamic tables around the official static table
+// and Huffman codec. It contains no browser presets. Limits come from HTTP/3
+// SETTINGS and explicit local encoder/decoder budgets.
 package qpack
 
 import (
