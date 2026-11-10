@@ -18,23 +18,24 @@ const (
 	initialCongestionWindow    = 32
 )
 
-// renoUndoState saves Reno's state before the latest cutback.
-type renoUndoState struct {
+// congestionUndoState saves the controller before the latest undoable cutback.
+type congestionUndoState struct {
 	congestionWindow   protocol.ByteCount
 	slowStartThreshold protocol.ByteCount
 	numAckedPackets    uint64
+	rfcCubic           rfcCubic
 	// Previous cutback's boundary; cubicSender holds the current boundary.
 	largestSentAtLastCutback protocol.PacketNumber
 	// Includes ECN events, which cannot be undone by spurious-loss reports.
 	numCongestionEvents uint64
 }
 
-func (s *renoUndoState) IsActive() bool {
+func (s *congestionUndoState) IsActive() bool {
 	return s.numCongestionEvents > 0
 }
 
-func (s *renoUndoState) Reset() {
-	*s = renoUndoState{}
+func (s *congestionUndoState) Reset() {
+	*s = congestionUndoState{}
 }
 
 type cubicSender struct {
@@ -45,7 +46,15 @@ type cubicSender struct {
 	pacer           *pacer
 	clock           Clock
 
-	reno bool
+	reno             bool
+	rfcCubic         *rfcCubic
+	classicSlowStart bool
+	fixedSegmentSize protocol.ByteCount
+	firstAppLimited  protocol.PacketNumber
+	batchingAck      bool
+	batchAcked       protocol.ByteCount
+	batchPackets     protocol.ByteCount
+	batchCwndLimited bool
 
 	// Track the largest packet that has been sent.
 	largestSentPacketNumber protocol.PacketNumber
@@ -70,7 +79,7 @@ type cubicSender struct {
 	numAckedPackets uint64
 
 	// Retained after recovery, since spurious losses can be reported later.
-	undoState renoUndoState
+	undoState congestionUndoState
 
 	initialCongestionWindow    protocol.ByteCount
 	initialMaxCongestionWindow protocol.ByteCount
@@ -159,16 +168,16 @@ func (c *cubicSender) HasPacingBudget(now monotime.Time) bool {
 }
 
 func (c *cubicSender) maxCongestionWindow() protocol.ByteCount {
-	return c.maxDatagramSize * protocol.MaxCongestionWindowPackets
+	return c.segmentSize() * protocol.MaxCongestionWindowPackets
 }
 
 func (c *cubicSender) minCongestionWindow() protocol.ByteCount {
-	return c.maxDatagramSize * minCongestionWindowPackets
+	return c.segmentSize() * minCongestionWindowPackets
 }
 
 func (c *cubicSender) OnPacketSent(
 	sentTime monotime.Time,
-	_ protocol.ByteCount,
+	bytesInFlight protocol.ByteCount,
 	packetNumber protocol.PacketNumber,
 	bytes protocol.ByteCount,
 	isRetransmittable bool,
@@ -176,6 +185,9 @@ func (c *cubicSender) OnPacketSent(
 	c.pacer.SentPacket(sentTime, bytes, c.pacingRate())
 	if !isRetransmittable {
 		return
+	}
+	if c.rfcCubic != nil && c.rfcCwndLimited(bytesInFlight+bytes) {
+		c.firstAppLimited = packetNumber + 1
 	}
 	c.largestSentPacketNumber = packetNumber
 	c.hybridSlowStart.OnPacketSent(packetNumber)
@@ -198,8 +210,8 @@ func (c *cubicSender) GetCongestionWindow() protocol.ByteCount {
 }
 
 func (c *cubicSender) MaybeExitSlowStart() {
-	if c.InSlowStart() &&
-		c.hybridSlowStart.ShouldExitSlowStart(c.rttStats.LatestRTT(), c.rttStats.MinRTT(), c.GetCongestionWindow()/c.maxDatagramSize) {
+	if !c.classicSlowStart && c.InSlowStart() &&
+		c.hybridSlowStart.ShouldExitSlowStart(c.rttStats.LatestRTT(), c.rttStats.MinRTT(), c.GetCongestionWindow()/c.segmentSize()) {
 		// exit slow start
 		c.slowStartThreshold = c.congestionWindow
 		c.maybeQlogStateChange(qlog.CongestionStateCongestionAvoidance)
@@ -216,7 +228,19 @@ func (c *cubicSender) OnPacketAcked(
 	if c.InRecovery() {
 		return
 	}
-	c.maybeIncreaseCwnd(ackedPacketNumber, ackedBytes, priorInFlight, eventTime)
+	if c.rfcCubic != nil {
+		limited := ackedPacketNumber < c.firstAppLimited
+		if c.batchingAck {
+			c.batchAcked += ackedBytes
+			c.batchPackets++
+			c.batchCwndLimited = c.batchCwndLimited || limited
+			return
+		}
+		c.batchPackets = 1
+		c.increaseRFCWindow(ackedBytes, limited, eventTime)
+	} else {
+		c.maybeIncreaseCwnd(ackedPacketNumber, ackedBytes, priorInFlight, eventTime)
+	}
 	c.connStats.CongestionWindow.Store(uint64(c.congestionWindow))
 	if c.InSlowStart() {
 		c.hybridSlowStart.OnPacketAcked(ackedPacketNumber)
@@ -236,13 +260,16 @@ func (c *cubicSender) OnCongestionEvent(packetNumber protocol.PacketNumber, lost
 		}
 		return
 	}
-	if c.reno {
-		c.undoState = renoUndoState{
+	if c.reno || c.rfcCubic != nil {
+		c.undoState = congestionUndoState{
 			congestionWindow:         c.congestionWindow,
 			slowStartThreshold:       c.slowStartThreshold,
 			numAckedPackets:          c.numAckedPackets,
 			largestSentAtLastCutback: c.largestSentAtLastCutback,
 			numCongestionEvents:      1,
+		}
+		if c.rfcCubic != nil {
+			c.undoState.rfcCubic = *c.rfcCubic
 		}
 	}
 
@@ -251,6 +278,8 @@ func (c *cubicSender) OnCongestionEvent(packetNumber protocol.PacketNumber, lost
 
 	if c.reno {
 		c.congestionWindow = protocol.ByteCount(float64(c.congestionWindow) * renoBeta)
+	} else if c.rfcCubic != nil {
+		c.congestionWindow = c.rfcCubic.afterLoss(c.congestionWindow, c.segmentSize(), lostBytes == 0)
 	} else {
 		c.congestionWindow = c.cubic.CongestionWindowAfterPacketLoss(c.congestionWindow)
 	}
@@ -286,6 +315,9 @@ func (c *cubicSender) OnSpuriousLoss(packetNumber protocol.PacketNumber) {
 	}
 	c.congestionWindow = state.congestionWindow
 	c.slowStartThreshold = state.slowStartThreshold
+	if c.rfcCubic != nil {
+		*c.rfcCubic = state.rfcCubic
+	}
 	c.numAckedPackets = state.numAckedPackets
 	c.largestSentAtLastCutback = state.largestSentAtLastCutback
 	c.connStats.CongestionWindow.Store(uint64(c.congestionWindow))
@@ -319,7 +351,11 @@ func (c *cubicSender) maybeIncreaseCwnd(
 	}
 	if c.InSlowStart() {
 		// TCP slow start, exponential growth, increase by one for each ACK.
-		c.congestionWindow += c.maxDatagramSize
+		if c.classicSlowStart {
+			c.congestionWindow = min(c.congestionWindow+ackedBytes, c.slowStartThreshold, c.maxCongestionWindow())
+		} else {
+			c.congestionWindow += c.segmentSize()
+		}
 		c.maybeQlogStateChange(qlog.CongestionStateSlowStart)
 		return
 	}
@@ -328,8 +364,8 @@ func (c *cubicSender) maybeIncreaseCwnd(
 	if c.reno {
 		// Classic Reno congestion avoidance.
 		c.numAckedPackets++
-		if c.numAckedPackets >= uint64(c.congestionWindow/c.maxDatagramSize) {
-			c.congestionWindow += c.maxDatagramSize
+		if c.numAckedPackets >= uint64(c.congestionWindow/c.segmentSize()) {
+			c.congestionWindow += c.segmentSize()
 			c.numAckedPackets = 0
 		}
 	} else {
@@ -347,7 +383,7 @@ func (c *cubicSender) isCwndLimited(bytesInFlight protocol.ByteCount) bool {
 	}
 	availableBytes := congestionWindow - bytesInFlight
 	slowStartLimited := c.InSlowStart() && bytesInFlight > congestionWindow/2
-	return slowStartLimited || availableBytes <= maxBurstPackets*c.maxDatagramSize
+	return slowStartLimited || availableBytes <= maxBurstPackets*c.segmentSize()
 }
 
 // BandwidthEstimate returns the current bandwidth estimate
@@ -378,6 +414,9 @@ func (c *cubicSender) OnRetransmissionTimeout(packetsRetransmitted bool) {
 	}
 	c.hybridSlowStart.Restart()
 	c.cubic.Reset()
+	if c.rfcCubic != nil {
+		*c.rfcCubic = rfcCubic{}
+	}
 	c.slowStartThreshold = c.congestionWindow / 2
 	c.congestionWindow = c.minCongestionWindow()
 	c.connStats.CongestionWindow.Store(uint64(c.congestionWindow))
@@ -390,8 +429,12 @@ func (c *cubicSender) OnConnectionMigration() {
 	c.largestAckedPacketNumber = protocol.InvalidPacketNumber
 	c.largestSentAtLastCutback = protocol.InvalidPacketNumber
 	c.undoState.Reset()
+	c.firstAppLimited = 0
 	c.lastCutbackExitedSlowstart = false
 	c.cubic.Reset()
+	if c.rfcCubic != nil {
+		*c.rfcCubic = rfcCubic{}
+	}
 	c.numAckedPackets = 0
 	c.congestionWindow = c.initialCongestionWindow
 	c.connStats.CongestionWindow.Store(uint64(c.congestionWindow))
@@ -412,6 +455,9 @@ func (c *cubicSender) SetMaxDatagramSize(s protocol.ByteCount) {
 	if cwndIsMinCwnd {
 		c.congestionWindow = c.minCongestionWindow()
 		c.connStats.CongestionWindow.Store(uint64(c.congestionWindow))
+	}
+	if !c.reno && c.rfcCubic == nil && c.fixedSegmentSize == 0 {
+		c.cubic.segmentSize = s
 	}
 	c.pacer.SetMaxDatagramSize(s)
 }

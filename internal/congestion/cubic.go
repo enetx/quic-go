@@ -10,6 +10,8 @@ import (
 
 // This cubic implementation is based on the one found in Chromiums's QUIC
 // implementation, in the files net/quic/congestion_control/cubic.{hh,cc}.
+// Byte-mode arithmetic reference:
+// https://github.com/google/quiche/blob/a1628192cf32ba40d21e0dd80f485d68c24ff87a/quiche/quic/core/congestion_control/cubic_bytes.cc
 
 // Constants based on TCP defaults.
 // The following constants are in 2^10 fractions of a second instead of ms to
@@ -21,8 +23,7 @@ const (
 	cubeScale                 = 40
 	cubeCongestionWindowScale = 410
 	cubeFactor                = 1 << cubeScale / cubeCongestionWindowScale / maxDatagramSize
-	// TODO: when re-enabling cubic, make sure to use the actual packet size here
-	maxDatagramSize = protocol.ByteCount(protocol.InitialPacketSize)
+	maxDatagramSize           = protocol.ByteCount(protocol.InitialPacketSize)
 )
 
 const defaultNumConnections = 1
@@ -37,7 +38,8 @@ const betaLastMax float32 = 0.85
 
 // Cubic implements the cubic algorithm from TCP
 type Cubic struct {
-	clock Clock
+	clock       Clock
+	segmentSize protocol.ByteCount
 
 	// Number of connections to simulate.
 	numConnections int
@@ -70,6 +72,7 @@ type Cubic struct {
 func NewCubic(clock Clock) *Cubic {
 	c := &Cubic{
 		clock:          clock,
+		segmentSize:    maxDatagramSize,
 		numConnections: defaultNumConnections,
 	}
 	c.Reset()
@@ -129,7 +132,7 @@ func (c *Cubic) OnApplicationLimited() {
 // a loss event. Returns the new congestion window in packets. The new
 // congestion window is a multiplicative decrease of our current window.
 func (c *Cubic) CongestionWindowAfterPacketLoss(currentCongestionWindow protocol.ByteCount) protocol.ByteCount {
-	if currentCongestionWindow+maxDatagramSize < c.lastMaxCongestionWindow {
+	if currentCongestionWindow+c.segmentSize < c.lastMaxCongestionWindow {
 		// We never reached the old max, so assume we are competing with another
 		// flow. Use our extra back off factor to allow the other flow to go up.
 		c.lastMaxCongestionWindow = protocol.ByteCount(c.betaLastMax() * float32(currentCongestionWindow))
@@ -162,7 +165,7 @@ func (c *Cubic) CongestionWindowAfterAck(
 			c.timeToOriginPoint = 0
 			c.originPointCongestionWindow = currentCongestionWindow
 		} else {
-			c.timeToOriginPoint = uint32(math.Cbrt(float64(cubeFactor * (c.lastMaxCongestionWindow - currentCongestionWindow))))
+			c.timeToOriginPoint = uint32(math.Cbrt(float64((1 << cubeScale / cubeCongestionWindowScale / c.segmentSize) * (c.lastMaxCongestionWindow - currentCongestionWindow))))
 			c.originPointCongestionWindow = c.lastMaxCongestionWindow
 		}
 	}
@@ -179,7 +182,9 @@ func (c *Cubic) CongestionWindowAfterAck(
 		offset = -offset
 	}
 
-	deltaCongestionWindow := protocol.ByteCount(cubeCongestionWindowScale*offset*offset*offset) * maxDatagramSize >> cubeScale
+	// Keep QUICHE's unsigned intermediate: a signed shift can produce a
+	// negative delta on long epochs before the ACK-growth cap is applied.
+	deltaCongestionWindow := protocol.ByteCount((cubeCongestionWindowScale * uint64(offset) * uint64(offset) * uint64(offset) * uint64(c.segmentSize)) >> cubeScale)
 	var targetCongestionWindow protocol.ByteCount
 	if elapsedTime > int64(c.timeToOriginPoint) {
 		targetCongestionWindow = c.originPointCongestionWindow + deltaCongestionWindow
@@ -194,7 +199,9 @@ func (c *Cubic) CongestionWindowAfterAck(
 	// congestion windows (less than 25), the formula below will
 	// increase slightly slower than linearly per estimated tcp window
 	// of bytes.
-	c.estimatedTCPcongestionWindow += protocol.ByteCount(float32(c.ackedBytesCount) * c.alpha() * float32(maxDatagramSize) / float32(c.estimatedTCPcongestionWindow))
+	// C++ compound assignment adds the fractional increment to the float
+	// estimate before converting the total back to bytes.
+	c.estimatedTCPcongestionWindow = protocol.ByteCount(float32(c.estimatedTCPcongestionWindow) + float32(c.ackedBytesCount)*(c.alpha()*float32(c.segmentSize))/float32(c.estimatedTCPcongestionWindow))
 	c.ackedBytesCount = 0
 
 	// We have a new cubic congestion window.

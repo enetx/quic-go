@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/enetx/quic-go/internal/ackhandler"
+	"github.com/enetx/quic-go/internal/congestion"
 	"github.com/enetx/quic-go/internal/monotime"
 	"github.com/enetx/quic-go/internal/protocol"
 	"github.com/enetx/quic-go/internal/wire"
@@ -53,8 +54,20 @@ type ClientHandshake struct {
 	// after a peer advertises its legacy minimum. Nil sends no requests.
 	PeerAckFrequencyPolicy PeerAckFrequencyPolicy
 	// InitialCongestionWindowPackets selects the initial congestion window in
-	// units of the initial datagram size. Zero retains the native default.
+	// units of the accounting segment (the initial MTU unless fixed below).
+	// Zero retains the native packet count.
 	InitialCongestionWindowPackets uint32
+	// CongestionControl selects Reno, RFC 9438 CUBIC, or fixed-point byte-mode
+	// CUBIC. Zero retains native Reno. Pacing and loss detection are independent.
+	CongestionControl CongestionControlAlgorithm
+	// SlowStart selects classic byte growth or original HyStart (not HyStart++).
+	SlowStart SlowStartAlgorithm
+	// CongestionControlSegmentSize fixes the accounting segment independently of
+	// path MTU. Zero follows the MTU; explicit values must fit 1200..65527.
+	CongestionControlSegmentSize uint16
+	// CongestionControlConnections selects 1..16 emulated connections for byte-mode
+	// CUBIC. Zero means one. Other algorithms accept only zero or one.
+	CongestionControlConnections uint32
 	// ReceiveWindowUpdateDivisor refreshes credit after more than 1/divisor
 	// of the receive window is consumed. Zero retains the native policy.
 	ReceiveWindowUpdateDivisor uint32
@@ -137,6 +150,15 @@ func (h *ClientHandshake) Clone() *ClientHandshake {
 func (h *ClientHandshake) Validate() error {
 	if h == nil {
 		return nil
+	}
+	if h.CongestionControl > CongestionControlCubicBytes || h.SlowStart > SlowStartHybrid {
+		return fmt.Errorf("invalid congestion control or slow start algorithm")
+	}
+	if h.CongestionControlSegmentSize != 0 && (h.CongestionControlSegmentSize < 1200 || h.CongestionControlSegmentSize > 65527) {
+		return fmt.Errorf("invalid congestion control segment size")
+	}
+	if h.CongestionControlConnections > 16 || h.CongestionControlConnections > 1 && h.CongestionControl != CongestionControlCubicBytes {
+		return fmt.Errorf("invalid congestion control connection count")
 	}
 	if n := h.InitialCongestionWindowPackets; n != 0 && (n < 2 || n > protocol.MaxCongestionWindowPackets) {
 		return fmt.Errorf("initial congestion window outside supported packet range")
@@ -225,11 +247,17 @@ func (c *Config) clientTLSFactory() tlsquic.NewClient {
 	return c.ClientHandshake.NewTLSClient
 }
 
-func (c *Config) initialCongestionWindowPackets() uint32 {
-	if c.ClientHandshake == nil {
-		return 0
+func (c *Config) congestionControlConfig() congestion.SenderConfig {
+	h := c.ClientHandshake
+	if h == nil {
+		return congestion.SenderConfig{}
 	}
-	return c.ClientHandshake.InitialCongestionWindowPackets
+	return congestion.SenderConfig{
+		Algorithm: h.CongestionControl, SlowStart: h.SlowStart,
+		InitialWindowPackets: h.InitialCongestionWindowPackets,
+		SegmentSize:          h.CongestionControlSegmentSize,
+		Connections:          h.CongestionControlConnections,
+	}
 }
 
 func (c *Conn) configureClientParameters(p *wire.TransportParameters) {

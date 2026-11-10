@@ -468,7 +468,7 @@ var newClientConnection = func(
 		s.perspective,
 		s.qlogger,
 		s.logger,
-		s.config.initialCongestionWindowPackets(),
+		s.config.congestionControlConfig(),
 	)
 	s.maxPayloadSizeEstimate.Store(uint32(estimateMaxPayloadSize(s.config.initialPacketSize())))
 	oneRTTStream := newCryptoStream()

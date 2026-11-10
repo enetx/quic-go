@@ -114,10 +114,10 @@ type sentPacketHandler struct {
 
 	bytesInFlight protocol.ByteCount
 
-	congestion                     congestion.SendAlgorithmWithDebugInfos
-	initialCongestionWindowPackets uint32
-	rttStats                       *utils.RTTStats
-	connStats                      *utils.ConnectionStats
+	congestion       congestion.SendAlgorithmWithDebugInfos
+	congestionConfig congestion.SenderConfig
+	rttStats         *utils.RTTStats
+	connStats        *utils.ConnectionStats
 
 	// The number of times a PTO has been sent without receiving an ack.
 	ptoCount uint32
@@ -154,24 +154,16 @@ func NewSentPacketHandler(
 	pers protocol.Perspective,
 	qlogger qlogwriter.Recorder,
 	logger utils.Logger,
-	initialWindowPackets ...uint32,
+	senderConfigs ...congestion.SenderConfig,
 ) SentPacketHandler {
-	congestion := congestion.NewCubicSender(
-		congestion.DefaultClock{},
-		rttStats,
-		connStats,
-		initialMaxDatagramSize,
-		true, // use Reno
-		qlogger,
-		initialWindowPackets...,
-	)
-
-	var windowPackets uint32
-	if len(initialWindowPackets) > 0 {
-		windowPackets = initialWindowPackets[0]
+	var config congestion.SenderConfig
+	if len(senderConfigs) > 0 && pers == protocol.PerspectiveClient {
+		config = senderConfigs[0]
 	}
+	sender := congestion.NewConfiguredSender(congestion.DefaultClock{}, rttStats, connStats, initialMaxDatagramSize, config, qlogger)
+
 	h := &sentPacketHandler{
-		initialCongestionWindowPackets: windowPackets,
+		congestionConfig:               config,
 		maxDatagramSize:                initialMaxDatagramSize,
 		peerCompletedAddressValidation: pers == protocol.PerspectiveServer,
 		peerAddressValidated:           pers == protocol.PerspectiveClient || clientAddressValidated,
@@ -189,7 +181,7 @@ func NewSentPacketHandler(
 		lostPackets:        *newLostPacketTracker(),
 		rttStats:           rttStats,
 		connStats:          connStats,
-		congestion:         congestion,
+		congestion:         sender,
 		ignorePacketsBelow: ignorePacketsBelow,
 		perspective:        pers,
 		qlogger:            qlogger,
@@ -526,6 +518,12 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 		return false, nil
 	}
 
+	// RFC 9438's whole-segment growth applies once per ACK frame, not once
+	// per acknowledged packet. Native and byte-mode controllers retain their loop.
+	batcher, batchesACKs := h.congestion.(congestion.AckBatcher)
+	if batchesACKs {
+		batcher.BeginAck()
+	}
 	var acked1RTTPacket bool
 	for _, p := range ackedPackets {
 		if p.includedInBytesInFlight {
@@ -538,6 +536,10 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 		if !p.isPathProbePacket {
 			putPacket(p.packet)
 		}
+	}
+
+	if batchesACKs {
+		batcher.EndAck(rcvTime)
 	}
 
 	// After this point, we must not use ackedPackets any longer!
@@ -1279,15 +1281,7 @@ func (h *sentPacketHandler) MigratedPath(now monotime.Time, initialMaxDatagramSi
 	for pn := range h.hist.PathProbes() {
 		h.hist.RemovePathProbe(pn)
 	}
-	h.congestion = congestion.NewCubicSender(
-		congestion.DefaultClock{},
-		h.rttStats,
-		h.connStats,
-		initialMaxDatagramSize,
-		true, // use Reno
-		h.qlogger,
-		h.initialCongestionWindowPackets,
-	)
+	h.congestion = congestion.NewConfiguredSender(congestion.DefaultClock{}, h.rttStats, h.connStats, initialMaxDatagramSize, h.congestionConfig, h.qlogger)
 	h.qlogRecoveryParametersSet(true)
 	h.setLossDetectionTimer(now)
 }

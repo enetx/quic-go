@@ -315,10 +315,9 @@ Invalid callback results close the local connection.
 
 `ClientHandshake.InitialCongestionWindowPackets` exposes only the initial window
 (zero retains native defaults; explicit range 2..10000). Migration restores that
-configured window against the new datagram size. Native Reno/Cubic recovery and
-pacing otherwise remain in place; no browser congestion controller is embedded.
-The small constructor extension and sent-packet metrics/timer methods are the
-only congestion/recovery hooks. Tests cover independent wire bytes, real negotiated
+configured window against the new accounting segment size. The optional
+congestion selectors described below extend this constructor; the native default
+remains Reno with the original HyStart and native pacing. Tests cover independent wire bytes, real negotiated
 and unnegotiated connections, invalid policies, delayed feedback, sequence
 exhaustion, packet budgets, PTO rearming, migration and non-resumption of capability.
 
@@ -334,3 +333,27 @@ pool; idle cleanup and Close retain ownership. Source files of the upstream
 transport are unchanged. Tests cover real HTTP/3 reuse and shared cancellation.
 
 Protocol competition, timers, browser policy and body ownership remain in Surf.
+
+## Client congestion control
+
+`ClientHandshake.CongestionControl` selects native Reno, explicit Reno,
+RFC 9438 CUBIC with whole-segment ACK credit, or fixed-point byte-mode CUBIC.
+`SlowStart` selects original HyStart or classic byte growth (not HyStart++).
+`CongestionControlSegmentSize` can fix the accounting segment independently of
+UDP MTU; zero follows MTU. Byte-mode `CongestionControlConnections` configures
+connection emulation. Browser choices and all preset values remain in Surf.
+
+The RFC controller is isolated in `internal/congestion/cubic_rfc9438.go`.
+ACK-frame batching and send-time window utilization preserve byte accounting
+when delayed ACKs cover several packets. Loss reduces by 0.7; ECN uses 0.85;
+spurious-loss undo restores the curve, ACK credit and saved window. Byte-mode
+CUBIC supports an explicit segment size and matches QUICHE's unsigned intermediates
+and conversion after the floating-point addition. The upstream Reno-friendly test
+helper is adjusted to that corrected rounding; independent C++ vectors validate it.
+Migration recreates the configured controller; timeout resets its transient state.
+Client options are ignored by server constructors. Defaults and server behavior
+remain unchanged. Pacing, PRR, persistent-congestion handling, recovery scheduling
+and browser experiments are separate work; these selectors do not establish full
+browser recovery parity. The source-derived suites execute 1120 original Neqo and
+540 original QUICHE controller vectors; their provenance and runners are in
+`internal/congestion/testdata`. They are not browser packet captures.

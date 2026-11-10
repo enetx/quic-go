@@ -18,7 +18,8 @@ const (
 )
 
 func renoCwnd(currentCwnd protocol.ByteCount) protocol.ByteCount {
-	return currentCwnd + protocol.ByteCount(float32(maxDatagramSize)*nConnectionAlpha*float32(maxDatagramSize)/float32(currentCwnd))
+	// Byte-mode CUBIC converts the full float sum to bytes (C++ compound assignment).
+	return protocol.ByteCount(float32(currentCwnd) + float32(maxDatagramSize)*(nConnectionAlpha*float32(maxDatagramSize))/float32(currentCwnd))
 }
 
 func cubicConvexCwnd(initialCwnd protocol.ByteCount, rtt, elapsedTime time.Duration) protocol.ByteCount {
