@@ -138,11 +138,10 @@ headers and supported transport parameters. Manual warmed requests to the extern
 HTTP/3 endpoint pass, including the Firefox response that previously exposed the
 dynamic-QPACK gap. The external endpoint is not a CI dependency.
 
-This does not establish complete browser identity. Official quic-go does not
-implement compatible in-flight version negotiation (RFC 9368). Advertising v2 in
-version_information while starting v1 makes supporting servers switch keys; this
-client cannot consume those packets. Surf's Firefox profile deliberately leaves
-that capability unadvertised. Explicit native v2 connections remain supported.
+This does not establish complete browser identity. Upstream quic-go lacks
+compatible in-flight version negotiation. This fork now adds opt-in client
+v1/v2 switching with authenticated validation; see Client version negotiation
+below. Native server negotiation policy remains unchanged.
 The native ACK_FREQUENCY parser has different last-field semantics from the
 legacy format. The fork exposes an isolated opt-in legacy receiver and local
 min_ack_delay advertisement; see below. It does not generate adaptive requests
@@ -357,3 +356,44 @@ and browser experiments are separate work; these selectors do not establish full
 browser recovery parity. The source-derived suites execute 1120 original Neqo and
 540 original QUICHE controller vectors; their provenance and runners are in
 `internal/congestion/testdata`. They are not browser packet captures.
+
+## Client version negotiation
+
+`ClientHandshake.CompatibleVersionNegotiation` enables RFC 9368 / RFC 9369
+v1/v2 switching and authenticated version negotiation checks. Native clients
+and server policy retain their defaults. `Config.Versions` supplies permitted
+versions and the initial version; a client layout may provide parameter 0x11
+with per-connection preference / GREASE. The engine validates and promotes that
+parameter into the typed codec, retaining its position and exact version values.
+No browser preferences are embedded in the fork.
+
+`compatible_version.go` owns selection guards, alternate Initial verification,
+server version-information checks and version-scoped token keys. It uses the
+existing bounded undecryptable-packet queue for reordered Handshake packets.
+Initial keys and packet key labels change only after a candidate Initial passes
+AEAD verification. The first server CRYPTO locks the version. Initial PN space,
+TLS transcript, congestion state and Retry's current key CID are retained.
+`ConnectionState.Version` reports the negotiated version. An authenticated
+mismatch, unavailable choice or induced downgrade fails with transport error 0x11.
+Malformed version information fails with TRANSPORT_PARAMETER_ERROR; the TLS
+error wrapper now preserves existing transport errors instead of masking them
+as INTERNAL_ERROR. The RFC 9368
+section 8 exception for old v1-only servers is covered.
+
+The handshake's isolated helper changes packet key labels and scopes client
+session-cache keys to the negotiated version. Packet packing retains original
+version headers and keys for 0-RTT after a switch. NEW_TOKEN entries are likewise
+isolated by version. A ticket from v2 is not offered by an original v1 connection;
+choosing the next connection's original version from browser history is separate
+application policy. No TLS library fork is required.
+
+Private-package tests cover both directions, Retry, an original-version ACK,
+reordered Handshake, a lost flight, corrupted candidate packets, classic VN and
+VN followed by compatible switching, old servers, malformed / contradictory
+information, downgrade rejection, PN decoding, 0-RTT packet types, cache isolation
+and real TLS application keys. The UDP packet peer drives actual client Dial and
+verifies client Finished. Its TLS/packet primitives are native and it is not an
+independent implementation of selection. Additional manual HTTP/3 interoperability
+checks use unmodified official aioquic 1.3.0, with private test certificates trusted
+by the Go clients, covering both directions, Retry and accepted original-version
+0-RTT across a switch. Surf preserves the sanitized reference results separately.

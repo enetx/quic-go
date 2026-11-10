@@ -164,7 +164,7 @@ func (t *Transport) init() error {
 		t.QUICConfig = t.QUICConfig.Clone()
 		t.QUICConfig.Versions = []quic.Version{quic.SupportedVersions()[0]}
 	}
-	if len(t.QUICConfig.Versions) != 1 {
+	if len(t.QUICConfig.Versions) != 1 && (t.QUICConfig.ClientHandshake == nil || !t.QUICConfig.ClientHandshake.CompatibleVersionNegotiation) {
 		return errors.New("can only use a single QUIC version for dialing a HTTP/3 connection")
 	}
 	if t.QUICConfig.MaxIncomingStreams == 0 {

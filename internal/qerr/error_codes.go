@@ -10,23 +10,24 @@ type TransportErrorCode uint64
 
 // The error codes defined by QUIC
 const (
-	NoError                   TransportErrorCode = 0x0
-	InternalError             TransportErrorCode = 0x1
-	ConnectionRefused         TransportErrorCode = 0x2
-	FlowControlError          TransportErrorCode = 0x3
-	StreamLimitError          TransportErrorCode = 0x4
-	StreamStateError          TransportErrorCode = 0x5
-	FinalSizeError            TransportErrorCode = 0x6
-	FrameEncodingError        TransportErrorCode = 0x7
-	TransportParameterError   TransportErrorCode = 0x8
-	ConnectionIDLimitError    TransportErrorCode = 0x9
-	ProtocolViolation         TransportErrorCode = 0xa
-	InvalidToken              TransportErrorCode = 0xb
-	ApplicationErrorErrorCode TransportErrorCode = 0xc
-	CryptoBufferExceeded      TransportErrorCode = 0xd
-	KeyUpdateError            TransportErrorCode = 0xe
-	AEADLimitReached          TransportErrorCode = 0xf
-	NoViablePathError         TransportErrorCode = 0x10
+	NoError                     TransportErrorCode = 0x0
+	InternalError               TransportErrorCode = 0x1
+	ConnectionRefused           TransportErrorCode = 0x2
+	FlowControlError            TransportErrorCode = 0x3
+	StreamLimitError            TransportErrorCode = 0x4
+	StreamStateError            TransportErrorCode = 0x5
+	FinalSizeError              TransportErrorCode = 0x6
+	FrameEncodingError          TransportErrorCode = 0x7
+	TransportParameterError     TransportErrorCode = 0x8
+	ConnectionIDLimitError      TransportErrorCode = 0x9
+	ProtocolViolation           TransportErrorCode = 0xa
+	InvalidToken                TransportErrorCode = 0xb
+	ApplicationErrorErrorCode   TransportErrorCode = 0xc
+	CryptoBufferExceeded        TransportErrorCode = 0xd
+	KeyUpdateError              TransportErrorCode = 0xe
+	AEADLimitReached            TransportErrorCode = 0xf
+	NoViablePathError           TransportErrorCode = 0x10
+	VersionNegotiationErrorCode TransportErrorCode = 0x11
 )
 
 func (e TransportErrorCode) IsCryptoError() bool {
@@ -44,6 +45,8 @@ func (e TransportErrorCode) Message() string {
 
 func (e TransportErrorCode) String() string {
 	switch e {
+	case VersionNegotiationErrorCode:
+		return "VERSION_NEGOTIATION_ERROR"
 	case NoError:
 		return "NO_ERROR"
 	case InternalError:

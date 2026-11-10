@@ -26,6 +26,10 @@ type StreamReceiveWindows struct{ BidiLocal, BidiRemote, Uni uint64 }
 // behavior. It contains no browser defaults or preset selection. Extension values
 // and TLS templates are supplied by the application. Server behavior is unchanged.
 type ClientHandshake struct {
+	// CompatibleVersionNegotiation enables RFC 9368 / RFC 9369 client switching
+	// between v1 and v2, with authenticated downgrade checks. A layout can supply
+	// version_information ordering and GREASE; otherwise Config.Versions is used.
+	CompatibleVersionNegotiation bool
 	// NewInitialPacketNumber selects a fresh start for each new connection.
 	NewInitialPacketNumber func() (uint64, error)
 	// OmitMaxUDPPayloadSize selects the protocol default and requires a matching receive buffer.
@@ -367,6 +371,9 @@ func (c *Conn) configureClientPacketPacker() {
 				return ackhandler.AckProbeNeeded(c.sentPacketHandler, now, h.AckProbePolicy)
 			}
 		}
+		if h.CompatibleVersionNegotiation && c.compatibleVersion != nil {
+			p.zeroRTTVersion = c.compatibleVersion.chosen
+		}
 		p.ackOnlyPingThreshold = h.AckOnlyPingThreshold
 		p.omitInitialAckOnHandshake = h.OmitInitialAckOnHandshake
 		p.initialProtection = h.InitialPacketProtection
@@ -403,6 +410,11 @@ func (c *Conn) configureClientHandshake(params *wire.TransportParameters) tlsqui
 			return func(*tls.Config) (tlsquic.Conn, error) { return nil, err }
 		}
 		params.ClientLayout = layout.Clone()
+	}
+	if h != nil && h.CompatibleVersionNegotiation {
+		if err := c.configureVersionInformation(params); err != nil {
+			return func(*tls.Config) (tlsquic.Conn, error) { return nil, err }
+		}
 	}
 	return c.config.clientTLSFactory()
 }

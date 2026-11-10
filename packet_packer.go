@@ -123,8 +123,9 @@ type ackFrameSource interface {
 }
 
 type packetPacker struct {
-	srcConnID     protocol.ConnectionID
-	getDestConnID func() protocol.ConnectionID
+	zeroRTTVersion protocol.Version
+	srcConnID      protocol.ConnectionID
+	getDestConnID  func() protocol.ConnectionID
 
 	perspective protocol.Perspective
 	cryptoSetup sealingManager
@@ -981,6 +982,9 @@ func (p *packetPacker) PackPathProbePacket(connID protocol.ConnectionID, frames 
 }
 
 func (p *packetPacker) getLongHeader(encLevel protocol.EncryptionLevel, v protocol.Version) *wire.ExtendedHeader {
+	if encLevel == protocol.Encryption0RTT && p.zeroRTTVersion != 0 {
+		v = p.zeroRTTVersion
+	}
 	pn, pnLen := p.pnManager.PeekPacketNumber(encLevel.PacketNumberSpace())
 	hdr := &wire.ExtendedHeader{
 		PacketNumber:    pn,
@@ -1004,6 +1008,9 @@ func (p *packetPacker) getLongHeader(encLevel protocol.EncryptionLevel, v protoc
 }
 
 func (p *packetPacker) appendLongHeaderPacket(buffer *packetBuffer, header *wire.ExtendedHeader, pl payload, padding protocol.ByteCount, sealer sealer, v protocol.Version) (*longHeaderPacket, error) {
+	if header.Type == protocol.PacketType0RTT && p.zeroRTTVersion != 0 {
+		v = p.zeroRTTVersion
+	}
 	var paddingLen protocol.ByteCount
 	pnLen := protocol.ByteCount(header.PacketNumberLen)
 	if pl.length < 4-pnLen {

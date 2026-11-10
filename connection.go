@@ -182,6 +182,8 @@ type Conn struct {
 	initialStream       *initialCryptoStream
 	handshakeStream     *cryptoStream
 	oneRTTStream        *cryptoStream // only set for the server
+	compatibleVersion   *compatibleVersionState
+	baseTokenStoreKey   string
 	cryptoStreamHandler cryptoStreamHandler
 
 	notifyReceivedPacket chan struct{}
@@ -449,6 +451,10 @@ var newClientConnection = func(
 		s.tokenStoreKey = tlsConf.ServerName
 	} else {
 		s.tokenStoreKey = conn.RemoteAddr().String()
+	}
+	if s.compatibleVersionEnabled() {
+		s.baseTokenStoreKey = s.tokenStoreKey
+		s.tokenStoreKey = versionedTokenKey(s.baseTokenStoreKey, s.version)
 	}
 	var token *ClientToken
 	if s.config.TokenStore != nil {
@@ -1138,7 +1144,7 @@ func (c *Conn) handleOnePacket(
 			}
 			lastConnID = hdr.DestConnectionID
 
-			if hdr.Version != c.version {
+			if hdr.Version != c.version && !c.acceptCompatibleVersion(hdr, packetData) {
 				if c.qlogger != nil {
 					c.qlogger.RecordEvent(qlog.PacketDropped{
 						Raw:                     qlog.RawInfo{Length: len(data), PayloadLength: qlog.OmitLength},
@@ -2071,6 +2077,11 @@ func (c *Conn) handleConnectionCloseFrame(frame *wire.ConnectionCloseFrame) erro
 }
 
 func (c *Conn) handleCryptoFrame(frame *wire.CryptoFrame, encLevel protocol.EncryptionLevel, rcvTime monotime.Time) error {
+	if encLevel == protocol.EncryptionInitial && len(frame.Data) > 0 && c.compatibleVersion != nil {
+		// The first server CRYPTO fixes the negotiated version, even if it does
+		// not yet contain a complete ServerHello (RFC 9369 §4.1).
+		c.compatibleVersion.confirmed = true
+	}
 	if err := c.cryptoStreamManager.HandleCryptoFrame(frame, encLevel); err != nil {
 		return err
 	}
@@ -2454,6 +2465,9 @@ func (c *Conn) restoreTransportParameters(params *wire.TransportParameters) {
 }
 
 func (c *Conn) handleTransportParameters(params *wire.TransportParameters) error {
+	if err := c.checkVersionInformation(params); err != nil {
+		return err
+	}
 	if c.qlogger != nil {
 		c.qlogTransportParameters(params, c.perspective.Opposite())
 	}

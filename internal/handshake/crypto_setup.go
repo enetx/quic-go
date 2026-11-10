@@ -32,7 +32,8 @@ type cryptoSetup struct {
 
 	events []Event
 
-	version protocol.Version
+	version       protocol.Version
+	initialConnID protocol.ConnectionID
 
 	ourParams  *wire.TransportParameters
 	peerParams *wire.TransportParameters
@@ -90,6 +91,10 @@ func NewCryptoSetupClient(
 	)
 
 	tlsConf = setupConfigForClient(tlsConf)
+	if tp.CompatibleVersionNegotiation && tlsConf.ClientSessionCache != nil {
+		tlsConf = tlsConf.Clone()
+		tlsConf.ClientSessionCache = &versionedSessionCache{cache: tlsConf.ClientSessionCache, version: func() protocol.Version { return cs.version }}
+	}
 	cs.tlsConf = tlsConf
 	cs.allow0RTT = enable0RTT
 
@@ -163,6 +168,7 @@ func newCryptoSetup(
 		})
 	}
 	return &cryptoSetup{
+		initialConnID: connID,
 		initialSealer: initialSealer,
 		initialOpener: initialOpener,
 		aead:          newUpdatableAEAD(rttStats, qlogger, logger, version),
@@ -177,6 +183,7 @@ func newCryptoSetup(
 }
 
 func (h *cryptoSetup) ChangeConnectionID(id protocol.ConnectionID) {
+	h.initialConnID = id
 	initialSealer, initialOpener := NewInitialAEAD(id, h.perspective, h.version)
 	h.initialSealer = initialSealer
 	h.initialOpener = initialOpener
@@ -696,6 +703,11 @@ func (h *cryptoSetup) ConnectionState() ConnectionState {
 }
 
 func wrapError(err error) error {
+	// Transport-parameter failures already carry the required QUIC error code.
+	// Preserve it instead of reclassifying peer input as an internal failure.
+	if transportErr, ok := errors.AsType[*qerr.TransportError](err); ok {
+		return transportErr
+	}
 	if alertErr, ok := errors.AsType[tls.AlertError](err); ok {
 		return qerr.NewLocalCryptoError(uint8(alertErr), err)
 	}

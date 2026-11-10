@@ -67,6 +67,10 @@ type PreferredAddress struct {
 
 // TransportParameters are parameters sent to the peer during the handshake
 type TransportParameters struct {
+	// VersionInformation is exchanged only when explicitly supplied. The mode
+	// flag is local metadata, never serialized into a transport parameter.
+	VersionInformation           *VersionInformation
+	CompatibleVersionNegotiation bool
 	// ClientLayout is an optional client-only encoding layout.
 	ClientLayout            *transportparams.Layout
 	OmitMaxUDPPayloadSize   bool
@@ -120,6 +124,7 @@ func (p *TransportParameters) Unmarshal(data []byte, sentBy protocol.Perspective
 }
 
 func (p *TransportParameters) unmarshal(b []byte, sentBy protocol.Perspective, fromSessionTicket bool) error {
+	p.VersionInformation = nil
 	// needed to check that every parameter is only sent at most once
 	parameterIDs := make([]transportParameterID, 0, 32)
 
@@ -229,6 +234,13 @@ func (p *TransportParameters) unmarshal(b []byte, sentBy protocol.Perspective, f
 				return protocol.ErrInvalidConnectionIDLen
 			}
 			p.RetrySourceConnectionID = protocol.ParseConnectionID(b[:paramLen])
+			b = b[paramLen:]
+		case transportParameterID(0x11):
+			var err error
+			p.VersionInformation, err = ParseVersionInformation(b[:paramLen], sentBy)
+			if err != nil {
+				return err
+			}
 			b = b[paramLen:]
 		case resetStreamAtParameterID, legacyResetStreamAtParameterID:
 			if paramLen != 0 {
@@ -494,6 +506,9 @@ func (p *TransportParameters) Marshal(pers protocol.Perspective) []byte {
 		b = p.marshalVarintParam(b, minAckDelayParameterID, uint64(*p.MinAckDelay/time.Microsecond))
 	}
 
+	if p.VersionInformation != nil {
+		b = p.VersionInformation.appendParameter(b)
+	}
 	if pers == protocol.PerspectiveClient && len(AdditionalTransportParametersClient) > 0 {
 		for k, v := range AdditionalTransportParametersClient {
 			b = quicvarint.Append(b, k)
