@@ -169,7 +169,7 @@ func TestWriteDeadlineSync(t *testing.T) {
 	select {
 	case err := <-errChan:
 		require.NoError(t, err)
-	case <-time.After(time.Second):
+	case <-time.After(scaleDuration(time.Second)):
 		t.Fatal("timeout")
 	}
 }
