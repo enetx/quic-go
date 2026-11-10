@@ -114,9 +114,10 @@ type sentPacketHandler struct {
 
 	bytesInFlight protocol.ByteCount
 
-	congestion congestion.SendAlgorithmWithDebugInfos
-	rttStats   *utils.RTTStats
-	connStats  *utils.ConnectionStats
+	congestion                     congestion.SendAlgorithmWithDebugInfos
+	initialCongestionWindowPackets uint32
+	rttStats                       *utils.RTTStats
+	connStats                      *utils.ConnectionStats
 
 	// The number of times a PTO has been sent without receiving an ack.
 	ptoCount uint32
@@ -153,6 +154,7 @@ func NewSentPacketHandler(
 	pers protocol.Perspective,
 	qlogger qlogwriter.Recorder,
 	logger utils.Logger,
+	initialWindowPackets ...uint32,
 ) SentPacketHandler {
 	congestion := congestion.NewCubicSender(
 		congestion.DefaultClock{},
@@ -161,9 +163,15 @@ func NewSentPacketHandler(
 		initialMaxDatagramSize,
 		true, // use Reno
 		qlogger,
+		initialWindowPackets...,
 	)
 
+	var windowPackets uint32
+	if len(initialWindowPackets) > 0 {
+		windowPackets = initialWindowPackets[0]
+	}
 	h := &sentPacketHandler{
+		initialCongestionWindowPackets: windowPackets,
 		maxDatagramSize:                initialMaxDatagramSize,
 		peerCompletedAddressValidation: pers == protocol.PerspectiveServer,
 		peerAddressValidated:           pers == protocol.PerspectiveClient || clientAddressValidated,
@@ -1152,6 +1160,15 @@ func (h *sentPacketHandler) TimeUntilSend() monotime.Time {
 	return h.congestion.TimeUntilSend(h.bytesInFlight)
 }
 
+func (h *sentPacketHandler) AckFrequencyState() (protocol.ByteCount, protocol.ByteCount) {
+	return h.congestion.GetCongestionWindow(), h.maxDatagramSize
+}
+
+func (h *sentPacketHandler) SetPeerMaxAckDelay(delay time.Duration, now monotime.Time) {
+	h.rttStats.SetMaxAckDelay(delay)
+	h.setLossDetectionTimer(now)
+}
+
 func (h *sentPacketHandler) SetMaxDatagramSize(s protocol.ByteCount) {
 	h.maxDatagramSize = s
 	h.congestion.SetMaxDatagramSize(s)
@@ -1240,6 +1257,7 @@ func (h *sentPacketHandler) ResetForRetry(now monotime.Time) {
 }
 
 func (h *sentPacketHandler) MigratedPath(now monotime.Time, initialMaxDatagramSize protocol.ByteCount) {
+	h.maxDatagramSize = initialMaxDatagramSize
 	h.rttStats.ResetForPathMigration()
 	h.lastMetrics = qlog.MetricsUpdated{}
 	h.packetThresholdDisabled = false
@@ -1268,6 +1286,7 @@ func (h *sentPacketHandler) MigratedPath(now monotime.Time, initialMaxDatagramSi
 		initialMaxDatagramSize,
 		true, // use Reno
 		h.qlogger,
+		h.initialCongestionWindowPackets,
 	)
 	h.qlogRecoveryParametersSet(true)
 	h.setLossDetectionTimer(now)

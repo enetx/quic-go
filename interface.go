@@ -106,6 +106,10 @@ type ConnectionIDGenerator interface {
 type Config struct {
 	// ClientHandshake provides optional application-owned client handshake controls.
 	ClientHandshake *ClientHandshake
+	// LegacyAckFrequencyMinDelay enables the legacy receive format and advertises
+	// its minimum on either endpoint. Zero leaves it disabled. ClientHandshake's
+	// client-only value, when set, overrides this value. Whole microseconds only.
+	LegacyAckFrequencyMinDelay time.Duration
 
 	// GetConfigForClient is called for incoming connections.
 	// If the error is not nil, the connection attempt is refused.

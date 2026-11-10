@@ -114,6 +114,7 @@ func populateConfig(config *Config) *Config {
 	}
 	return &Config{
 		ClientHandshake:                  config.ClientHandshake.Clone(),
+		LegacyAckFrequencyMinDelay:       config.LegacyAckFrequencyMinDelay,
 		GetConfigForClient:               config.GetConfigForClient,
 		Versions:                         versions,
 		HandshakeIdleTimeout:             handshakeIdleTimeout,

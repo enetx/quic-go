@@ -49,6 +49,12 @@ type ClientHandshake struct {
 	// format and advertises its min_ack_delay (0xff02de1a). Zero disables it.
 	// Positive values must be whole microseconds no larger than MaxAckDelay.
 	LegacyAckFrequencyMinDelay time.Duration
+	// PeerAckFrequencyPolicy opts into sending legacy ACK_FREQUENCY requests
+	// after a peer advertises its legacy minimum. Nil sends no requests.
+	PeerAckFrequencyPolicy PeerAckFrequencyPolicy
+	// InitialCongestionWindowPackets selects the initial congestion window in
+	// units of the initial datagram size. Zero retains the native default.
+	InitialCongestionWindowPackets uint32
 	// ReceiveWindowUpdateDivisor refreshes credit after more than 1/divisor
 	// of the receive window is consumed. Zero retains the native policy.
 	ReceiveWindowUpdateDivisor uint32
@@ -132,6 +138,9 @@ func (h *ClientHandshake) Validate() error {
 	if h == nil {
 		return nil
 	}
+	if n := h.InitialCongestionWindowPackets; n != 0 && (n < 2 || n > protocol.MaxCongestionWindowPackets) {
+		return fmt.Errorf("initial congestion window outside supported packet range")
+	}
 	maximum := h.MaxAckDelay
 	if maximum == 0 {
 		maximum = ackhandler.MaxAckDelay
@@ -182,6 +191,14 @@ func (c *Config) validateClientHandshake() error {
 	if err := h.Validate(); err != nil {
 		return err
 	}
+	maximum := ackhandler.MaxAckDelay
+	if h != nil && h.MaxAckDelay > 0 {
+		maximum = h.MaxAckDelay
+	}
+	if minimum := c.LegacyAckFrequencyMinDelay; minimum < 0 || minimum > 0 &&
+		(minimum > maximum || minimum%time.Microsecond != 0) {
+		return fmt.Errorf("invalid legacy ACK_FREQUENCY minimum delay")
+	}
 	if h == nil {
 		return nil
 	}
@@ -207,6 +224,14 @@ func (c *Config) clientTLSFactory() tlsquic.NewClient {
 	}
 	return c.ClientHandshake.NewTLSClient
 }
+
+func (c *Config) initialCongestionWindowPackets() uint32 {
+	if c.ClientHandshake == nil {
+		return 0
+	}
+	return c.ClientHandshake.InitialCongestionWindowPackets
+}
+
 func (c *Conn) configureClientParameters(p *wire.TransportParameters) {
 	h := c.config.ClientHandshake
 	if h == nil {
@@ -224,12 +249,6 @@ func (c *Conn) configureClientParameters(p *wire.TransportParameters) {
 		c.receivedPacketHandler.SetMaxAckDelay(h.MaxAckDelay)
 	}
 	c.receivedPacketHandler.SetAckPolicy(h.AckPolicy, c.rttStats)
-	if h.LegacyAckFrequencyMinDelay > 0 {
-		delay := h.LegacyAckFrequencyMinDelay
-		p.LegacyMinAckDelay = &delay
-		c.receivedPacketHandler.SetLegacyAckFrequency(delay)
-		c.frameParser.SetLegacyAckFrequency(true)
-	}
 	if w := h.StreamReceiveWindows; w != nil {
 		p.InitialMaxStreamDataBidiLocal = protocol.ByteCount(w.BidiLocal)
 		p.InitialMaxStreamDataBidiRemote = protocol.ByteCount(w.BidiRemote)
@@ -345,6 +364,7 @@ func (h *connIDManager) activeConnectionIDLimit() uint64 {
 
 func (c *Conn) configureClientHandshake(params *wire.TransportParameters) tlsquic.NewClient {
 	c.configureClientParameters(params)
+	c.configureLegacyAckFrequency(params)
 	h := c.config.ClientHandshake
 	if h != nil && h.NewTransportParameters != nil {
 		layout, err := h.NewTransportParameters(c.version)

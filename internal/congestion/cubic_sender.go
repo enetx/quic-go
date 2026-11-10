@@ -94,14 +94,19 @@ func NewCubicSender(
 	initialMaxDatagramSize protocol.ByteCount,
 	reno bool,
 	qlogger qlogwriter.Recorder,
+	initialWindowPackets ...uint32,
 ) *cubicSender {
+	window := protocol.ByteCount(initialCongestionWindow)
+	if len(initialWindowPackets) > 0 && initialWindowPackets[0] != 0 {
+		window = protocol.ByteCount(initialWindowPackets[0])
+	}
 	return newCubicSender(
 		clock,
 		rttStats,
 		connStats,
 		reno,
 		initialMaxDatagramSize,
-		initialCongestionWindow*initialMaxDatagramSize,
+		window*initialMaxDatagramSize,
 		protocol.MaxCongestionWindowPackets*initialMaxDatagramSize,
 		qlogger,
 	)

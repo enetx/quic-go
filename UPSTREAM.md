@@ -266,7 +266,9 @@ No partial counter split or forced wire truncation is included in this release.
 `ClientHandshake.LegacyAckFrequencyMinDelay` enables receive support and emits
 local parameter 0xff02de1a. Zero retains native parsing and advertisement; positive
 whole-microsecond values must fit the configured max_ack_delay. Profiles and the
-chosen minimum remain in Surf. This mode adds no outgoing ACK-rate requests.
+chosen minimum remain in Surf. `Config.LegacyAckFrequencyMinDelay` also enables
+the same receiver on either endpoint, including opt-in test servers. The existing
+client-only value overrides it when nonzero. Sender policy is independent.
 
 `internal/wire/legacy_ack_frequency_frame.go` isolates the three-varint plus
 single-byte ignore_order format. It is deliberately separate from the existing
@@ -289,3 +291,33 @@ forbidden for engine-owned IDs. Private parser/tracker tests, independent Neqo
 bytes, qlog serialization and real client/server frame injection cover the mode,
 including disabled and invalid-delay connection errors. Surf additionally decrypts
 Initial bytes to verify the Firefox advertisement, ordering, overrides and opt-out.
+
+## Outgoing legacy ACK_FREQUENCY
+
+`ClientHandshake.PeerAckFrequencyPolicy` enables a per-connection controller only
+after the actual handshake and an opted-in decode of peer parameter 0xff02de1a.
+Native clients still ignore this parameter. Capability is not saved for 0-RTT.
+The callback supplies policy from the application's live congestion window,
+datagram size and smoothed RTT; browser constants and hysteresis remain in Surf.
+Nil retains native behavior. Callbacks must be concurrency safe across connections
+and must not block or reenter a connection.
+
+`peer_ack_frequency.go` isolates sequencing, packet budgets and frame delivery.
+Only one request is outstanding; loss allows a new sequence with the latest
+target instead of retransmitting stale settings. Late feedback cannot clear a
+newer outstanding request or restore an older acknowledged state. Recovery uses
+the maximum of current, target and sent-but-unconfirmed delay, and rearms PTO on
+changes. The unconfirmed high-water bound is deliberately conservative compared
+with Neqo's current/target bound; it clears when the latest request is acknowledged.
+Targets must have a positive QUIC integer tolerance and a whole-microsecond delay
+at least the peer minimum and at most 16383ms, the engine's max_ack_delay range.
+Invalid callback results close the local connection.
+
+`ClientHandshake.InitialCongestionWindowPackets` exposes only the initial window
+(zero retains native defaults; explicit range 2..10000). Migration restores that
+configured window against the new datagram size. Native Reno/Cubic recovery and
+pacing otherwise remain in place; no browser congestion controller is embedded.
+The small constructor extension and sent-packet metrics/timer methods are the
+only congestion/recovery hooks. Tests cover independent wire bytes, real negotiated
+and unnegotiated connections, invalid policies, delayed feedback, sequence
+exhaustion, packet budgets, PTO rearming, migration and non-resumption of capability.

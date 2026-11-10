@@ -54,7 +54,8 @@ const (
 	// to prevent 0-RTT resumption with tickets that remember it.
 	legacyResetStreamAtParameterID transportParameterID = 0x17f7586d2cb571
 	// https://datatracker.ietf.org/doc/draft-ietf-quic-ack-frequency/11/
-	minAckDelayParameterID transportParameterID = 0xff04de1b
+	minAckDelayParameterID       transportParameterID = 0xff04de1b
+	legacyMinAckDelayParameterID transportParameterID = 0xff02de1a
 )
 
 // PreferredAddress is the value encoding in the preferred_address transport parameter
@@ -100,8 +101,10 @@ type TransportParameters struct {
 	MaxDatagramFrameSize protocol.ByteCount // RFC 9221
 	EnableResetStreamAt  bool               // https://datatracker.ietf.org/doc/draft-ietf-quic-reliable-stream-reset/09/
 	MinAckDelay          *time.Duration
-	// LegacyMinAckDelay is a local-only legacy ACK_FREQUENCY advertisement.
-	// Peer values remain unknown unless a sender implementation opts in.
+	// ParseLegacyAckFrequency recognizes the peer's legacy parameter only when
+	// the caller opts into the sender. It is never serialized or remembered for 0-RTT.
+	ParseLegacyAckFrequency bool
+	// LegacyMinAckDelay is a local advertisement or an opted-in peer minimum.
 	LegacyMinAckDelay *time.Duration
 }
 
@@ -147,6 +150,16 @@ func (p *TransportParameters) unmarshal(b []byte, sentBy protocol.Perspective, f
 		}
 		parameterIDs = append(parameterIDs, paramID)
 		switch paramID {
+		case legacyMinAckDelayParameterID:
+			if p.ParseLegacyAckFrequency {
+				value, consumed, err := quicvarint.Parse(b[:paramLen])
+				if err != nil || consumed != int(paramLen) || value >= 1<<24 {
+					return fmt.Errorf("invalid legacy min_ack_delay")
+				}
+				minimum := time.Duration(value) * time.Microsecond
+				p.LegacyMinAckDelay = &minimum
+			}
+			b = b[paramLen:]
 		case maxIdleTimeoutParameterID,
 			maxUDPPayloadSizeParameterID,
 			initialMaxDataParameterID,
@@ -235,6 +248,9 @@ func (p *TransportParameters) unmarshal(b []byte, sentBy protocol.Perspective, f
 	// min_ack_delay must be less or equal to max_ack_delay
 	if p.MinAckDelay != nil && *p.MinAckDelay > p.MaxAckDelay {
 		return fmt.Errorf("min_ack_delay (%s) is greater than max_ack_delay (%s)", *p.MinAckDelay, p.MaxAckDelay)
+	}
+	if p.ParseLegacyAckFrequency && p.LegacyMinAckDelay != nil && *p.LegacyMinAckDelay > p.MaxAckDelay {
+		return fmt.Errorf("legacy min_ack_delay exceeds max_ack_delay")
 	}
 	if !fromSessionTicket {
 		if sentBy == protocol.PerspectiveServer && !readOriginalDestinationConnectionID {

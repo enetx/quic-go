@@ -4,6 +4,7 @@ import (
 	"github.com/enetx/quic-go/internal/monotime"
 	"github.com/enetx/quic-go/internal/protocol"
 	"github.com/enetx/quic-go/internal/wire"
+	"time"
 )
 
 // SentPacketHandler handles ACKs received for outgoing packets
@@ -24,6 +25,8 @@ type SentPacketHandler interface {
 	// It is used for pacing packets.
 	TimeUntilSend() monotime.Time
 	SetMaxDatagramSize(count protocol.ByteCount)
+	AckFrequencyState() (window, packetSize protocol.ByteCount)
+	SetPeerMaxAckDelay(time.Duration, monotime.Time)
 
 	// only to be called once the handshake is complete
 	QueueProbePacket(protocol.PacketNumberSpace) bool /* was a packet queued */

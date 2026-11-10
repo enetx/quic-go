@@ -360,6 +360,7 @@ var newConnection = func(
 	} else {
 		params.MaxDatagramFrameSize = protocol.InvalidByteCount
 	}
+	s.configureLegacyAckFrequency(params)
 	if s.qlogger != nil {
 		s.qlogTransportParameters(params, protocol.PerspectiveServer)
 	}
@@ -467,6 +468,7 @@ var newClientConnection = func(
 		s.perspective,
 		s.qlogger,
 		s.logger,
+		s.config.initialCongestionWindowPackets(),
 	)
 	s.maxPayloadSizeEstimate.Store(uint32(estimateMaxPayloadSize(s.config.initialPacketSize())))
 	oneRTTStream := newCryptoStream()
@@ -2524,6 +2526,7 @@ func (c *Conn) applyTransportParameters() {
 	c.frameParser.SetAckDelayExponent(params.AckDelayExponent)
 	c.connFlowController.UpdateSendWindow(params.InitialMaxData)
 	c.rttStats.SetMaxAckDelay(params.MaxAckDelay)
+	c.configurePeerAckFrequency()
 	c.connIDGenerator.SetMaxActiveConnIDs(params.ActiveConnectionIDLimit)
 	if params.StatelessResetToken != nil {
 		c.connIDManager.SetStatelessResetToken(*params.StatelessResetToken)
@@ -2547,6 +2550,9 @@ func (c *Conn) maxMTU() protocol.ByteCount {
 
 func (c *Conn) triggerSending(now monotime.Time) error {
 	c.pacingDeadline = 0
+	if err := c.refreshPeerAckFrequency(now); err != nil {
+		return err
+	}
 
 	sendMode := c.sentPacketHandler.SendMode(now)
 	switch sendMode {

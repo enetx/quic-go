@@ -90,6 +90,8 @@ func configWithNonZeroNonFunctionFields(t *testing.T) *Config {
 			// Can't compare functions.
 		case "ClientHandshake":
 			f.Set(reflect.ValueOf(&ClientHandshake{InitialPacketNumber: 1}))
+		case "LegacyAckFrequencyMinDelay":
+			f.Set(reflect.ValueOf(time.Millisecond))
 		case "Versions":
 			f.Set(reflect.ValueOf([]Version{1, 2, 3}))
 		case "ConnectionIDLength":

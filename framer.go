@@ -47,7 +47,8 @@ type queuedStream struct {
 }
 
 type framer struct {
-	mutex sync.Mutex
+	peerAckFrequency *peerAckFrequencySender // Owned by the connection loop, only active after the handshake.
+	mutex            sync.Mutex
 
 	activeStreams         map[protocol.StreamID]queuedStream
 	retransmissionStreams map[protocol.StreamID]streamFrameGetter
@@ -82,6 +83,9 @@ func newFramer(connFlowController *connectionFlowController) *framer {
 }
 
 func (f *framer) HasData() bool {
+	if f.peerAckFrequency.pending() {
+		return true
+	}
 	f.controlFrameMutex.Lock()
 	hasControlFrames := len(f.streamsWithControlFrames) > 0 || len(f.controlFrames) > 0 || len(f.pathResponses) > 0
 	f.controlFrameMutex.Unlock()
@@ -243,11 +247,15 @@ func (f *framer) AppendControlFrames(
 	defer f.controlFrameMutex.Unlock()
 
 	var length protocol.ByteCount
-	// add a PATH_RESPONSE first, but only pack a single PATH_RESPONSE per packet
+	if frame := f.peerAckFrequency.popFrame(maxLen, v); frame.Frame != nil {
+		frames = append(frames, frame)
+		length = frame.Frame.Length(v)
+	}
+	// Pack a single PATH_RESPONSE before other queued control frames.
 	if len(f.pathResponses) > 0 {
 		frame := f.pathResponses[0]
 		frameLen := frame.Length(v)
-		if frameLen <= maxLen {
+		if frameLen <= maxLen-length {
 			frames = append(frames, ackhandler.Frame{Frame: frame})
 			length += frameLen
 			f.pathResponses = f.pathResponses[1:]
