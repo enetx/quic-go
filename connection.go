@@ -514,6 +514,7 @@ var newClientConnection = func(
 	s.cryptoStreamManager = newCryptoStreamManager(s.initialStream, s.handshakeStream, oneRTTStream)
 	s.unpacker = newPacketUnpacker(cs, s.srcConnIDLen)
 	s.packer = newPacketPacker(srcConnID, s.connIDManager.Get, s.initialStream, s.handshakeStream, s.sentPacketHandler, s.retransmissionQueue, cs, s.framer, &s.receivedPacketHandler, s.datagramQueue, s.perspective, s.qlogger)
+	s.configureClientPacketPacker()
 	if token != nil {
 		s.packer.SetToken(token.data)
 	}
@@ -546,6 +547,9 @@ func (c *Conn) preSetup(r *pathReceiver) {
 		c.rttStats,
 		c.logger,
 	)
+	if c.perspective == protocol.PerspectiveClient && c.config.ClientHandshake != nil {
+		c.connFlowController.updateDivisor = c.config.ClientHandshake.ReceiveWindowUpdateDivisor
+	}
 	c.earlyConnReadyChan = make(chan struct{})
 	c.streamsMap = newStreamsMap(
 		c.ctx,
@@ -973,6 +977,9 @@ func (c *Conn) handleHandshakeComplete(now monotime.Time) error {
 	// During a 0-RTT connection, the client is only allowed to use the new transport parameters for 1-RTT packets.
 	if c.perspective == protocol.PerspectiveClient {
 		c.applyTransportParameters()
+		if h := c.config.ClientHandshake; h != nil && h.OnApplicationReady != nil {
+			h.OnApplicationReady(c)
+		}
 		return nil
 	}
 
@@ -2878,6 +2885,10 @@ func (c *Conn) sendPackedCoalescedPacket(packet *coalescedPacket, ecn protocol.E
 		if p.ack != nil {
 			largestAcked = p.ack.LargestAcked()
 		}
+		size := p.length
+		if p.EncryptionLevel() == protocol.EncryptionInitial {
+			size += packet.initialDatagramPadding
+		}
 		c.sentPacketHandler.SentPacket(
 			now,
 			p.header.PacketNumber,
@@ -2886,7 +2897,7 @@ func (c *Conn) sendPackedCoalescedPacket(packet *coalescedPacket, ecn protocol.E
 			p.frames,
 			p.EncryptionLevel(),
 			ecn,
-			p.length,
+			size,
 			false,
 			false,
 		)

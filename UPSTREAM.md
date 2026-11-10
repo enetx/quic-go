@@ -39,8 +39,12 @@ Advertising an extension does not implement it.
 | Optional QPACK stream order, type timing and encoder capacity announcements | `http3/qpack_client.go` | one transport option, client setup, peer SETTINGS and request header/trailer hooks |
 | Ordered/additional client parameters and external GREASE | `transportparams/` | one field and return adapter in `internal/wire/transport_parameters.go` |
 | External TLS client | `tlsquic/` | client-only factory and error propagation in `internal/handshake/crypto_setup.go` |
-| Initial SETTINGS before request writes | `http3/client_settings.go` | one readiness channel and two hooks in `http3/client.go`; packet-order regression |
+| Initial SETTINGS before request writes / optional first-flight staging | `http3/client_settings.go`, `http3/client_initial_settings.go` | readiness channel, nonblocking control preparation and per-dial application-ready callback |
 | HTTP/3 ordering and priority | `http3/` custom files and existing small hooks | see `http3/UPSTREAM.md` |
+| First HTTP/3 body read and cancellation of blocked uploads | `http3/request_body_reads.go` | optional wire callback, validated header collection and body-copy hooks |
+| Encoded packet-number length and recovery-driven ACK-only probes | `packet_policy.go`, `internal/ackhandler/client_packet_policy.go` | send-handler length/MTU hooks and one client packer branch; callbacks stay outside the engine |
+| Optional Initial datagram padding, separated handshake ACK flight and NEW_CONNECTION_ID order | `initial_datagram_padding.go`, `connection_id_frame_order.go` | client packer options, Initial padding accounting and a control-queue ordering branch |
+| Optional client Initial protection, address-based packet size, ACK-only PING and receive-credit batching | `initial_packet_protection.go`, `client_handshake.go` | packet serialization/handshake hooks, per-client flow-controller divisor; no browser defaults |
 
 A separate upstream bug fix in `crypto_stream.go` sorts absent SNI cuts after
 real ECH cuts. ECH without SNI (IP origins) otherwise leaves HasData false and
@@ -180,3 +184,77 @@ cloned per configuration and connection. This does not implement ACK_FREQUENCY,
 its legacy wire parameter, congestion control, packet pacing or version switching.
 Deterministic `internal/ackhandler/ack_policy_test.go` cases cover boundary numbers,
 non-eliciting packets, timer expiry, real RTT samples, gaps, ECN and snapshots.
+
+Optional client packet controls remain independent of receive ACK scheduling.
+`InitialPacketProtection` fragments/reorders actual CRYPTO and distributes the
+existing padding budget. The multi-packet layout preserves stream offsets and
+native fragment retransmission handlers. Configuration is snapshotted per
+connection; browser values and policies remain in Surf. Property tests cover
+partial ClientHello writes, packet budgets, large messages, recovery and later
+TLS messages.
+
+`ReceiveWindowUpdateDivisor` applies to real stream/connection controllers.
+`AckOnlyPingThreshold` can retain, replace or disable periodic PING insertion.
+`AckOnlyMaxDataThreshold` queues a repeat of current connection credit to solicit
+an ACK, without increasing credit. `OmitInitialAckOnHandshake` omits an ACK-only
+Initial only when Handshake data/keys are ready. Initial DCID length and
+address-based UDP-size factories run per dial attempt; errors/invalid results
+fail before packet emission. Default client/server behavior remains native.
+
+Optional `PacketNumberLengthPolicy` receives a recovery snapshot and selects encoded
+bytes. Invalid lengths fall back to native; too-short lengths are increased to
+retain a safe decoding range. Server policies are never installed. The handler
+tracks the current datagram size for congestion-window estimates.
+`AckProbePolicy` receives tracked application-data packet count (including
+ACK-only sends), last eliciting send age and unbacked-off PTO. It only adds a
+PING to an ACK-bearing packet when congestion and packet space permit it; native
+PTO recovery remains independent. Lost-packet retention still follows quic-go.
+
+`DisableConnectionIDRotation` suppresses unsolicited changes on the current path,
+including the first post-handshake change. Peer retirement and path migration
+remain mandatory and have explicit regressions. `OnApplicationReady` is a
+nonblocking staging callback after verified TLS and applied peer parameters,
+before releasing `HandshakeComplete`. It must never call blocking stream writes
+or `CloseWithError`. HTTP/3 uses `TryWriteAll` and hands blocked writes to a goroutine.
+
+`InitialPaddingMode` optionally moves the datagram size padding outside coalesced
+long-header packets. Header-protection sample padding remains encrypted. A final
+short-header packet instead receives encrypted padding because its ciphertext
+extends to the UDP boundary; appending plaintext would invalidate AEAD. Datagram
+padding is charged to the Initial sent-packet size, while qlog packet lengths
+remain their actual encoded lengths. Initial probes and close packets use the
+same policy. Servers and zero-valued client controls keep native behavior.
+
+`HandshakeAckBeforeData` optionally packs queued Initial/Handshake ACKs before
+consuming local Handshake CRYPTO. The ACK-only prefix never includes application
+data. Native disposal of Initial keys on the first Handshake send then allows the
+following Finished flight to remain unpadded. There is no injected timer, TLS
+verification bypass or asynchronous TLS-engine modification. Certificate
+verification still completes synchronously; this reproduces flight composition,
+not NSS authentication latency.
+
+`SortConnectionIDFrames` controls the NEW_CONNECTION_ID subsequence independently
+of other frame types. Queue admission preserves ascending order across packet
+budgets, and serialization restores it after native control-frame shuffling.
+Every frame moves with its loss/ACK handler. Default queues and servers retain
+native ordering. Unit tests cover packet budgets and 100 shuffle seeds; live
+transport tests cover each padding/ACK combination, rejected certificates,
+0-RTT acceptance/rejection and loss of each of the first three outgoing datagrams.
+
+HTTP/3 also accepts a per-connection `WireConfig.SettingsGrease` factory. Reserved
+identifier validation and ordered snapshotting are isolated in
+`http3/settings_grease.go`; browser distributions remain outside the engine.
+
+## Packet-number space assessment
+
+Encoded packet-number length is configurable; packet-number allocation remains
+native. Splitting the generator into Initial, Handshake and application counters
+alone is unsafe: `sent_packet_history.go` requires globally increasing numbers,
+and the shared recovery history, skipped-number handling and handshake-number
+lists rely on them. Cubic recovery also compares `largestSentPacketNumber`,
+`largestAckedPacketNumber` and `largestSentAtLastCutback` across sends.
+
+A separate change would need per-space wire-number histories and a globally
+ordered internal transmission identifier for congestion bookkeeping, plus tests
+for Retry, rejected 0-RTT, key disposal, PTO, loss/reordering and migration probes.
+No partial counter split or forced wire truncation is included in this release.

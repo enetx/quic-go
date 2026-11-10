@@ -124,6 +124,14 @@ HEADERS/QPACK state changes. `Stream.Write` retains unfinished-frame handling;
 `TryWriteAll` queues all capped frames atomically or leaves its state unchanged.
 Browser sizing policy stays in Surf.
 
+`RequestBodyFirstReadSizePolicy` receives a private copy of the validated wire
+fields and the effective buffer size before connection QPACK state changes.
+It can limit the first nonempty read independently of subsequent reads. Empty
+reads retain the limit; short reads are passed through without coalescing or
+waiting for more producer data. Invalid results fail request preparation.
+The upload reader is closed on stream cancellation even when response HEADERS
+have already arrived, so a blocking streaming source can release its goroutine.
+
 `WithPriorityUpdateHandler` publishes a concurrency-safe per-attempt updater after
 HEADERS. `RequestStream.UpdatePriority` exposes it for low-level users. Updates
 share the bounded connection control writer, suppress repeated values only after
@@ -139,3 +147,36 @@ and atomic retry. Priority tests cover real control frames, deduplication, reset
 cancellation and deterministic queue backpressure. Surf additionally verifies
 browser-profile sizing, TLS 0-RTT with standard TLS, GOAWAY and changed SETTINGS
 across fresh QPACK connections. No browser values or TLS fork are added here.
+
+## Initial control-stream staging
+
+`WireConfig.CoalesceInitialSettings` optionally creates the client from a per-dial
+`OnApplicationReady` callback before the QUIC handshake channel is released. The
+caller configuration is cloned and its callback is chained. `sync.Once` shares
+exactly one client between this callback and `Dial` / `DialEarly` completion.
+The constructor reserves its control/QPACK streams once and tries a nonblocking
+SETTINGS+reserved-frame write. Insufficient flow-control credit hands the same
+stream and bytes to an asynchronous writer; cancellation releases that writer.
+Failures are published through the existing readiness channel. Nil/default wire
+configuration retains asynchronous startup. Custom dialers and early-data
+acceptance/rejection are covered alongside native startup tests.
+
+HTTP/3 settings can share the client's first post-handshake flight; the option
+cannot guarantee NIC batching, a fixed datagram size, identical handshake ACK
+scheduling or shared congestion state with another implementation.
+
+## Per-connection reserved SETTINGS
+
+`WireConfig.SettingsGrease` generates one reserved SETTINGS identifier/value when
+initial control bytes are prepared. It runs once per client connection, including
+staged startup, rather than once per request or transport. The factory must be
+concurrency safe, nonblocking and must not reenter the transport. Its identifier
+must follow `0x1f * N + 0x21`; both fields must fit a QUIC varint. Invalid values,
+collisions with configured settings and factory errors fail preparation before
+writing the control prefix. Valid output is appended to a private ordered snapshot;
+configured SETTINGS and QPACK state are unchanged. Nil retains native behavior.
+The engine contains no browser random distribution or profile defaults.
+
+Private validation and real HTTP/3 tests cover bounds, duplicates, errors, input
+immutability, request reuse and fresh connections. Surf supplies Chromium's two
+independent uint32 draws through its fluent `GreaseFactory` profile control.

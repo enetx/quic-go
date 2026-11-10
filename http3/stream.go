@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"time"
 
 	"github.com/enetx/http"
@@ -309,10 +310,12 @@ func (s *Stream) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 // MASQUE proxying protocols.
 // Stream and application errors are returned as *[Error], possibly wrapped.
 type RequestStream struct {
-	str                  *Stream
-	bodyBufferSize       int
-	bodyBufferSizePolicy func(int64) int
-	priorityUpdater      *PriorityUpdater
+	str                     *Stream
+	bodyBufferSize          int
+	bodyBufferSizePolicy    func(int64) int
+	bodyFirstReadSizePolicy func(RequestBodyReadInfo) int
+	bodyFirstReadSize       int
+	priorityUpdater         *PriorityUpdater
 
 	responseBody io.ReadCloser // set by ReadResponse
 
@@ -490,7 +493,22 @@ func (s *RequestStream) sendRequestHeader(req *http.Request) error {
 	s.isConnect = req.Method == http.MethodConnect
 	s.isHead = req.Method == http.MethodHead
 	s.sentRequest = true
-	err := maybeReplaceError(s.requestWriter.WriteRequestHeader(s.str.datagramStream, req, s.requestedGzip, s.str.StreamID(), s.str.qlogger))
+	var prepareBody []func([]qpack.HeaderField) error
+	if req.Body != nil && req.Body != http.NoBody && s.bodyFirstReadSizePolicy != nil {
+		prepareBody = append(prepareBody, func(fields []qpack.HeaderField) error {
+			bufferSize := s.bodyBufferSize
+			if bufferSize == 0 {
+				bufferSize = bodyCopyBufferSize
+			}
+			size := s.bodyFirstReadSizePolicy(RequestBodyReadInfo{Request: req, HeaderFields: slices.Clone(fields), BufferSize: bufferSize})
+			if size < 0 || size > bufferSize {
+				return fmt.Errorf("http3: first body read size must be between 0 and %d", bufferSize)
+			}
+			s.bodyFirstReadSize = size
+			return nil
+		})
+	}
+	err := maybeReplaceError(s.requestWriter.WriteRequestHeader(s.str.datagramStream, req, s.requestedGzip, s.str.StreamID(), s.str.qlogger, prepareBody...))
 	if err != nil {
 		return err
 	}

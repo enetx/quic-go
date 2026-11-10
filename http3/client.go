@@ -147,43 +147,14 @@ func newClientConnWithWire(
 	c.configureWire(wireConfig)
 	c.requestWriter.beforeRequestHeaders = c.queuePriorityUpdate
 	c.rawConn.configureQPACK(additionalSettings)
-	// send the SETTINGs frame, using 0-RTT data, if possible
-	go func() {
-		defer func() {
-			close(c.initialSettingsWritten)
-			if c.initialSettingsErr != nil {
-				c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeInternalError), "invalid HTTP/3 client configuration")
-			}
-		}()
-		if err := c.wireConfig.Validate(); err != nil {
-			c.initialSettingsErr = &RequestPreparationError{err}
-			return
-		}
-		if c.wireConfig != nil && c.wireConfig.ControlGreaseFrames != nil {
-			frames, err := c.wireConfig.ControlGreaseFrames()
-			if err == nil {
-				c.controlWriter.initial, err = appendGreaseFrames(frames)
-			}
-			if err != nil {
-				c.initialSettingsErr = &RequestPreparationError{err}
-				return
-			}
-		}
-		stream, err := c.rawConn.openControlStream(initialClientSettings(enableDatagrams, additionalSettings))
-		if err == nil && c.rawConn.clientQPACK != nil {
-			err = c.rawConn.clientQPACK.prepare()
-		}
-		if err != nil {
-			if c.logger != nil {
-				c.logger.Debug("setting up connection failed", "error", err)
-			}
-			c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeInternalError), "")
-			return
-		}
-		if c.controlWriter != nil {
-			go c.controlWriter.run(stream)
-		}
-	}()
+	// Send SETTINGS in 0-RTT when available, otherwise stage the control
+	// stream before the first post-handshake flight if explicitly requested.
+	if c.wireConfig.CoalesceInitialSettings {
+		c.startInitialSettings(enableDatagrams, additionalSettings, true)
+	} else {
+		go c.startInitialSettings(enableDatagrams, additionalSettings, false)
+	}
+
 	return c
 }
 
@@ -253,6 +224,7 @@ func (c *ClientConn) openRequestStream(
 		stream.str.maxDataFrameSize = c.wireConfig.MaxDataFrameSize
 		stream.bodyBufferSize = c.wireConfig.RequestBodyBufferSize
 		stream.bodyBufferSizePolicy = c.wireConfig.RequestBodyBufferSizePolicy
+		stream.bodyFirstReadSizePolicy = c.wireConfig.RequestBodyFirstReadSizePolicy
 	}
 	stream.priorityUpdater = &PriorityUpdater{request: ctx, connection: c.conn.Context(), done: reqDone,
 		send: func(u int8, incremental bool) error { return c.enqueuePriorityUpdate(str.StreamID(), u, incremental) }}
@@ -457,13 +429,19 @@ func (r *cancelingReader) Read(b []byte) (int, error) {
 }
 
 func (c *ClientConn) sendRequestBody(str *RequestStream, body io.ReadCloser, contentLength int64) error {
+	body = &requestBodyCloser{ReadCloser: body}
+	stop := context.AfterFunc(str.Context(), func() { body.Close() })
+	defer stop()
 	defer body.Close()
 	size := str.bodyBufferSize
 	if size == 0 {
 		size = bodyCopyBufferSize
 	}
 	buf := make([]byte, size)
-	sr := &cancelingReader{str: str, r: body}
+	var sr io.Reader = &cancelingReader{str: str, r: body}
+	if str.bodyFirstReadSize > 0 {
+		sr = &firstBodyReadReader{r: sr, size: str.bodyFirstReadSize}
+	}
 	if contentLength == -1 {
 		_, err := io.CopyBuffer(str, sr, buf)
 		return err

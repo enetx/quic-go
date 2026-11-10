@@ -12,9 +12,11 @@ import (
 // The native path retains the official static encoder; its small adapter changes
 // only the N bit or expands an exact reference into a literal when necessary.
 func (w *requestWriter) writeQPACKField(name, value string) error {
-	if w.encodeQPACK != nil {
+	if w.encodeQPACK != nil || w.collectBodyFields {
 		w.qpackFields = append(w.qpackFields, qpack.HeaderField{Name: name, Value: value})
-		return nil
+		if w.encodeQPACK != nil {
+			return nil
+		}
 	}
 	start := w.headerBuf.Len()
 	if err := w.encoder.WriteField(qpack.HeaderField{Name: name, Value: value}); err != nil {

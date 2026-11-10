@@ -4,8 +4,11 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"time"
 
+	"github.com/enetx/quic-go/internal/ackhandler"
+	"github.com/enetx/quic-go/internal/monotime"
 	"github.com/enetx/quic-go/internal/protocol"
 	"github.com/enetx/quic-go/internal/wire"
 	"github.com/enetx/quic-go/quicvarint"
@@ -42,6 +45,48 @@ type ClientHandshake struct {
 	MaxAckDelay time.Duration
 	// AckPolicy controls local Application Data ACK scheduling. Nil keeps native behavior.
 	AckPolicy *AckPolicy
+	// ReceiveWindowUpdateDivisor refreshes credit after more than 1/divisor
+	// of the receive window is consumed. Zero retains the native policy.
+	ReceiveWindowUpdateDivisor uint32
+	// AckOnlyPingThreshold counts consecutive ACK-only packets before adding
+	// a PING. Zero retains native behavior; -1 disables these extra PINGs.
+	AckOnlyPingThreshold int
+	// AckOnlyMaxDataThreshold requests a repeat of the current connection credit
+	// after this many ACK-only packets, instead of injecting a periodic PING.
+	// Zero disables this policy. It never grants additional receive credit.
+	AckOnlyMaxDataThreshold int
+	// AckProbePolicy optionally adds PING to an otherwise ACK-only packet. It
+	// replaces periodic probes. Callbacks must not block or reenter the connection.
+	AckProbePolicy func(AckProbeInfo) bool
+	// PacketNumberLengthPolicy chooses encoded packet-number bytes from a live
+	// snapshot. Unsafe short results are increased; invalid results use native.
+	PacketNumberLengthPolicy func(PacketNumberLengthInfo) uint8
+	// DisableConnectionIDRotation retains the active ID on an unchanged path.
+	// Peer-requested retirement and path migration still select a replacement.
+	DisableConnectionIDRotation bool
+	// SortConnectionIDFrames orders queued NEW_CONNECTION_ID frames by ascending
+	// sequence number while preserving positions of other control-frame types.
+	SortConnectionIDFrames bool
+	// OnApplicationReady runs once after verified TLS and peer transport
+	// parameters, before releasing HandshakeComplete and sending the next flight.
+	// It must not block, reenter Dial, call CloseWithError or use blocking Write.
+	// OpenUniStream and SendStream.TryWriteAll may be used to stage initial data.
+	OnApplicationReady func(*Conn)
+	// OmitInitialAckOnHandshake omits an ACK-only Initial when client
+	// Handshake data is ready. Initial keys are discarded when Handshake sends.
+	OmitInitialAckOnHandshake bool
+	InitialPacketProtection   *InitialPacketProtection
+	// InitialPaddingMode chooses encrypted packet padding or a zero datagram tail.
+	InitialPaddingMode InitialPaddingMode
+	// HandshakeAckBeforeData sends queued Initial/Handshake ACKs in a separate
+	// datagram before the first local Handshake CRYPTO. It inserts no time delay
+	// and does not alter TLS verification or native Initial key disposal.
+	HandshakeAckBeforeData bool
+	// NewInitialDestinationConnectionIDLength selects a fresh length (8..20).
+	NewInitialDestinationConnectionIDLength func() (int, error)
+	// NewInitialPacketSize selects the UDP payload floor from the actual remote
+	// address for each dial attempt. Results must fit 1200..MaxPacketBufferSize.
+	NewInitialPacketSize func(net.Addr) (uint16, error)
 
 	// DisableClientHelloScrambling disables upstream SNI/ECH CRYPTO fragmentation.
 	DisableClientHelloScrambling bool
@@ -64,6 +109,10 @@ func (h *ClientHandshake) Clone() *ClientHandshake {
 		return nil
 	}
 	c := *h
+	if h.InitialPacketProtection != nil {
+		policy := *h.InitialPacketProtection
+		c.InitialPacketProtection = &policy
+	}
 	c.AckPolicy = h.AckPolicy.Clone()
 	if h.StreamReceiveWindows != nil {
 		w := *h.StreamReceiveWindows
@@ -72,10 +121,23 @@ func (h *ClientHandshake) Clone() *ClientHandshake {
 	c.TransportParameters = h.TransportParameters.Clone()
 	return &c
 }
-func (c *Config) validateClientHandshake() error {
-	h := c.ClientHandshake
+
+// Validate checks standalone client controls without invoking per-attempt
+// factories. Config validation additionally checks runtime window/datagram coupling.
+func (h *ClientHandshake) Validate() error {
 	if h == nil {
 		return nil
+	}
+	if h.InitialPaddingMode > InitialPaddingDatagram {
+		return fmt.Errorf("invalid Initial padding mode: %d", h.InitialPaddingMode)
+	}
+	if h.ReceiveWindowUpdateDivisor == 1 || h.AckOnlyPingThreshold < -1 || h.AckOnlyMaxDataThreshold < 0 ||
+		(h.AckOnlyMaxDataThreshold > 0 && h.AckOnlyPingThreshold > 0) ||
+		(h.AckProbePolicy != nil && (h.AckOnlyMaxDataThreshold > 0 || h.AckOnlyPingThreshold > 0)) {
+		return fmt.Errorf("invalid receive-window divisor or conflicting ACK probe policies")
+	}
+	if err := h.InitialPacketProtection.validate(); err != nil {
+		return err
 	}
 	if h.MaxUDPPayloadSize != 0 && (h.MaxUDPPayloadSize < 1200 || h.MaxUDPPayloadSize > MaxUDPReceivePacketSize) {
 		return fmt.Errorf("max UDP payload size exceeds receive buffer support")
@@ -100,6 +162,17 @@ func (c *Config) validateClientHandshake() error {
 	}
 	if h.InitialPacketNumber > quicvarint.Max {
 		return fmt.Errorf("initial packet number exceeds QUIC range")
+	}
+	return nil
+}
+
+func (c *Config) validateClientHandshake() error {
+	h := c.ClientHandshake
+	if err := h.Validate(); err != nil {
+		return err
+	}
+	if h == nil {
+		return nil
 	}
 	if h.MaxDatagramFrameSize > 0 && (!c.EnableDatagrams || h.MaxDatagramFrameSize > quicvarint.Max) {
 		return fmt.Errorf("custom datagram limit requires enabled datagrams and must not exceed %d", quicvarint.Max)
@@ -170,10 +243,22 @@ func (c *Conn) initialStreamReceiveWindow(id protocol.StreamID) protocol.ByteCou
 	return protocol.ByteCount(c.config.InitialStreamReceiveWindow)
 }
 func (c *Config) initialDestinationConnectionID() (protocol.ConnectionID, error) {
-	if c.ClientHandshake == nil || c.ClientHandshake.InitialDestinationConnectionIDLength == 0 {
+	h := c.ClientHandshake
+	if h == nil || (h.InitialDestinationConnectionIDLength == 0 && h.NewInitialDestinationConnectionIDLength == nil) {
 		return generateConnectionIDForInitial()
 	}
-	b := make([]byte, c.ClientHandshake.InitialDestinationConnectionIDLength)
+	length := h.InitialDestinationConnectionIDLength
+	if h.NewInitialDestinationConnectionIDLength != nil {
+		var err error
+		length, err = h.NewInitialDestinationConnectionIDLength()
+		if err != nil {
+			return protocol.ConnectionID{}, err
+		}
+	}
+	if length < 8 || length > 20 {
+		return protocol.ConnectionID{}, fmt.Errorf("Initial connection ID factory length outside 8..20: %d", length)
+	}
+	b := make([]byte, length)
 	if _, err := rand.Read(b); err != nil {
 		return protocol.ConnectionID{}, err
 	}
@@ -200,6 +285,37 @@ func (c *Config) initialPacketNumber() (protocol.PacketNumber, error) {
 func (c *Conn) configureInitialCryptoStream() {
 	if c.perspective == protocol.PerspectiveClient && c.config.ClientHandshake != nil && c.config.ClientHandshake.DisableClientHelloScrambling {
 		c.initialStream.scramble = false
+	}
+	if h := c.config.ClientHandshake; c.perspective == protocol.PerspectiveClient && h != nil && h.InitialPacketProtection != nil {
+		c.initialStream.scramble = false
+		c.initialStream.protection = &initialProtectionState{policy: *h.InitialPacketProtection}
+	}
+}
+
+func (c *Conn) configureClientPacketPacker() {
+	if h := c.config.ClientHandshake; h != nil {
+		c.connIDManager.disableRotation = h.DisableConnectionIDRotation
+		c.framer.sortConnectionIDFrames = h.SortConnectionIDFrames
+		ackhandler.SetPacketNumberLengthPolicy(c.sentPacketHandler, h.PacketNumberLengthPolicy)
+		p := c.packer.(*packetPacker)
+		if h.AckProbePolicy != nil {
+			p.shouldProbeAckOnly = func(now monotime.Time) bool {
+				return ackhandler.AckProbeNeeded(c.sentPacketHandler, now, h.AckProbePolicy)
+			}
+		}
+		p.ackOnlyPingThreshold = h.AckOnlyPingThreshold
+		p.omitInitialAckOnHandshake = h.OmitInitialAckOnHandshake
+		p.initialProtection = h.InitialPacketProtection
+		p.initialPaddingMode = h.InitialPaddingMode
+		p.handshakeAckBeforeData = h.HandshakeAckBeforeData
+		p.sortConnectionIDFrames = h.SortConnectionIDFrames
+		p.ackOnlyMaxDataThreshold = h.AckOnlyMaxDataThreshold
+		p.queueAckOnlyProbe = func() {
+			c.connFlowController.mutex.Lock()
+			credit := c.connFlowController.receiveWindow
+			c.connFlowController.mutex.Unlock()
+			c.queueControlFrame(&wire.MaxDataFrame{MaximumData: credit})
+		}
 	}
 }
 

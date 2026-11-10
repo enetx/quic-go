@@ -288,6 +288,17 @@ func (t *Transport) doDial(
 	use0RTT bool,
 	version protocol.Version,
 ) (*Conn, error) {
+	if h := config.ClientHandshake; h != nil && h.NewInitialPacketSize != nil {
+		size, err := h.NewInitialPacketSize(sendConn.RemoteAddr())
+		if err != nil {
+			return nil, err
+		}
+		if size < uint16(protocol.MinInitialPacketSize) || size > uint16(protocol.MaxPacketBufferSize) {
+			return nil, fmt.Errorf("Initial packet-size factory result outside supported bounds: %d", size)
+		}
+		config = config.Clone()
+		config.InitialPacketSize = size
+	}
 	srcConnID, err := t.connIDGenerator.GenerateConnectionID()
 	if err != nil {
 		return nil, err

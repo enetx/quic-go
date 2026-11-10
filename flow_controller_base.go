@@ -17,6 +17,7 @@ type receiveFlowController struct {
 	receiveWindow        protocol.ByteCount
 	receiveWindowSize    protocol.ByteCount
 	maxReceiveWindowSize protocol.ByteCount
+	updateDivisor        uint32
 
 	allowWindowIncrease func(size protocol.ByteCount) bool
 
@@ -34,6 +35,9 @@ func (c *receiveFlowController) addBytesRead(n protocol.ByteCount) {
 
 func (c *receiveFlowController) hasWindowUpdate() bool {
 	bytesRemaining := c.receiveWindow - c.bytesRead
+	if c.updateDivisor != 0 {
+		return bytesRemaining < c.receiveWindowSize-c.receiveWindowSize/protocol.ByteCount(c.updateDivisor)
+	}
 	// update the window when more than the threshold was consumed
 	return bytesRemaining <= protocol.ByteCount(float64(c.receiveWindowSize)*(1-protocol.WindowUpdateThreshold))
 }

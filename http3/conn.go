@@ -84,12 +84,25 @@ func (c *rawConn) OpenUniStream() (*quic.SendStream, error) {
 // openControlStream opens the control stream and sends the SETTINGS frame.
 // It returns the control stream (needed by the server for sending GOAWAY later).
 func (c *rawConn) openControlStream(settings *settingsFrame) (*quic.SendStream, error) {
+	str, b, err := c.prepareControlStream(settings)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := str.Write(b); err != nil {
+		return nil, err
+	}
+	return str, nil
+}
+
+// prepareControlStream reserves the stream and builds SETTINGS without a
+// blocking write, allowing a client to stage it from the QUIC send loop.
+func (c *rawConn) prepareControlStream(settings *settingsFrame) (*quic.SendStream, []byte, error) {
 	c.AddQlogProducer()
 	defer c.RemoveQlogProducer()
 
 	str, err := c.conn.OpenUniStream()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	b := make([]byte, 0, 64)
 	b = quicvarint.Append(b, streamTypeControlStream)
@@ -118,10 +131,7 @@ func (c *rawConn) openControlStream(settings *settingsFrame) (*quic.SendStream, 
 			Frame:    qlog.Frame{Frame: sf},
 		})
 	}
-	if _, err := str.Write(b); err != nil {
-		return nil, err
-	}
-	return str, nil
+	return str, b, nil
 }
 
 func (c *rawConn) TrackStream(str *quic.Stream) *stateTrackingStream {

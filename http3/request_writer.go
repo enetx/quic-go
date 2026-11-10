@@ -27,6 +27,7 @@ const bodyCopyBufferSize = 8 * 1024
 type requestWriter struct {
 	encodeQPACK          func(quic.StreamID, []qpack.HeaderField) ([]byte, error)
 	qpackFields          []qpack.HeaderField
+	collectBodyFields    bool
 	beforeRequestHeaders func(*http.Request, quic.StreamID) error
 	greaseFrames         func(*http.Request) ([]GreaseFrame, error)
 	qpackConfig          *QPACKConfig
@@ -44,9 +45,9 @@ func newRequestWriter() *requestWriter {
 	}
 }
 
-func (w *requestWriter) WriteRequestHeader(wr io.Writer, req *http.Request, gzip bool, streamID quic.StreamID, qlogger qlogwriter.Recorder) error {
+func (w *requestWriter) WriteRequestHeader(wr io.Writer, req *http.Request, gzip bool, streamID quic.StreamID, qlogger qlogwriter.Recorder, prepareBody ...func([]qpack.HeaderField) error) error {
 	buf := &bytes.Buffer{}
-	if err := w.writeHeaders(buf, req, gzip, streamID, qlogger); err != nil {
+	if err := w.writeHeaders(buf, req, gzip, streamID, qlogger, prepareBody...); err != nil {
 		return err
 	}
 	if _, err := wr.Write(buf.Bytes()); err != nil {
@@ -57,12 +58,17 @@ func (w *requestWriter) WriteRequestHeader(wr io.Writer, req *http.Request, gzip
 	return nil
 }
 
-func (w *requestWriter) writeHeaders(wr io.Writer, req *http.Request, gzip bool, streamID quic.StreamID, qlogger qlogwriter.Recorder) error {
+func (w *requestWriter) writeHeaders(wr io.Writer, req *http.Request, gzip bool, streamID quic.StreamID, qlogger qlogwriter.Recorder, prepareBody ...func([]qpack.HeaderField) error) error {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 	defer w.encoder.Close()
 	defer w.headerBuf.Reset()
-	defer func() { clear(w.qpackFields); w.qpackFields = w.qpackFields[:0] }()
+	defer func() {
+		clear(w.qpackFields)
+		w.qpackFields = w.qpackFields[:0]
+		w.collectBodyFields = false
+	}()
+	w.collectBodyFields = len(prepareBody) > 0 && prepareBody[0] != nil
 
 	var trailers string
 	if len(req.Trailer) > 0 {
@@ -81,6 +87,11 @@ func (w *requestWriter) writeHeaders(wr io.Writer, req *http.Request, gzip bool,
 	headerFields, err := w.encodeHeaders(req, gzip, trailers, actualContentLength(req), qlogger != nil)
 	if err != nil {
 		return err
+	}
+	if w.collectBodyFields {
+		if err := prepareBody[0](w.qpackFields); err != nil {
+			return &RequestPreparationError{err}
+		}
 	}
 	var grease []byte
 	if w.greaseFrames != nil {

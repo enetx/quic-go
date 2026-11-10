@@ -76,8 +76,10 @@ func (p *handshakePacketNumbers) Highest() protocol.PacketNumber {
 type sentPacketHandler struct {
 	// Packet numbers and their history are shared across encryption levels.
 	// ACK processing and loss detection still use the state for each space.
-	pns  *packetNumberGenerator
-	hist sentPacketHistory
+	packetNumberLengthPolicy func(PacketNumberLengthInfo) uint8
+	maxDatagramSize          protocol.ByteCount
+	pns                      *packetNumberGenerator
+	hist                     sentPacketHistory
 
 	handshakePNs *handshakePacketNumbers
 
@@ -162,6 +164,7 @@ func NewSentPacketHandler(
 	)
 
 	h := &sentPacketHandler{
+		maxDatagramSize:                initialMaxDatagramSize,
 		peerCompletedAddressValidation: pers == protocol.PerspectiveServer,
 		peerAddressValidated:           pers == protocol.PerspectiveClient || clientAddressValidated,
 		pns:                            newPacketNumberGenerator(initialPN, skipPacketInitialPeriod, skipPacketMaxPeriod),
@@ -1091,7 +1094,7 @@ func (h *sentPacketHandler) PeekPacketNumber(space protocol.PacketNumberSpace) (
 	pnSpace := h.getPacketNumberSpace(space)
 	pn := h.pns.Peek(space == protocol.PacketNumberSpaceAppData)
 	// See section 17.1 of RFC 9000.
-	return pn, protocol.PacketNumberLengthForHeader(pn, pnSpace.largestAcked)
+	return pn, h.packetNumberLength(pn, pnSpace.largestAcked, space)
 }
 
 func (h *sentPacketHandler) PopPacketNumber(space protocol.PacketNumberSpace) protocol.PacketNumber {
@@ -1150,6 +1153,7 @@ func (h *sentPacketHandler) TimeUntilSend() monotime.Time {
 }
 
 func (h *sentPacketHandler) SetMaxDatagramSize(s protocol.ByteCount) {
+	h.maxDatagramSize = s
 	h.congestion.SetMaxDatagramSize(s)
 }
 

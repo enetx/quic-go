@@ -41,6 +41,7 @@ func newStreamFlowController(
 			rttStats:             rttStats,
 			receiveWindow:        receiveWindow,
 			receiveWindowSize:    receiveWindow,
+			updateDivisor:        cfc.updateDivisor,
 			maxReceiveWindowSize: maxReceiveWindow,
 			logger:               logger,
 		},

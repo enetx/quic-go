@@ -403,11 +403,31 @@ func (t *Transport) dial(ctx context.Context, hostname string) (*quic.Conn, clie
 			return conn, err
 		}
 	}
-	conn, err := dial(ctx, hostname, tlsConf, t.QUICConfig)
+	config := t.QUICConfig
+	var once sync.Once
+	var client clientConn
+	ensureClient := func(conn *quic.Conn) clientConn {
+		once.Do(func() { client = t.newClientConn(conn) })
+		return client
+	}
+	if t.WireConfig != nil && t.WireConfig.CoalesceInitialSettings {
+		config = config.Clone()
+		if config.ClientHandshake == nil {
+			config.ClientHandshake = &quic.ClientHandshake{}
+		}
+		previous := config.ClientHandshake.OnApplicationReady
+		config.ClientHandshake.OnApplicationReady = func(conn *quic.Conn) {
+			ensureClient(conn)
+			if previous != nil {
+				previous(conn)
+			}
+		}
+	}
+	conn, err := dial(ctx, hostname, tlsConf, config)
 	if err != nil {
 		return nil, nil, err
 	}
-	clientConn := t.newClientConn(conn)
+	clientConn := ensureClient(conn)
 	go func() {
 		for {
 			str, err := conn.AcceptUniStream(context.Background())

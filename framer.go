@@ -66,6 +66,7 @@ type framer struct {
 
 	controlFrameMutex          sync.Mutex
 	controlFrames              []wire.Frame
+	sortConnectionIDFrames     bool
 	pathResponses              []*wire.PathResponseFrame
 	connFlowController         *connectionFlowController
 	queuedTooManyControlFrames bool
@@ -276,6 +277,9 @@ func (f *framer) AppendControlFrames(
 		}
 	}
 
+	if f.sortConnectionIDFrames {
+		orderConnectionIDFrames(f.controlFrames)
+	}
 	for len(f.controlFrames) > 0 {
 		frame := f.controlFrames[len(f.controlFrames)-1]
 		if cf, ok := frame.(*wire.CryptoFrame); ok {

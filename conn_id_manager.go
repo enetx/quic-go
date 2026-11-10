@@ -18,8 +18,9 @@ type newConnID struct {
 }
 
 type connIDManager struct {
-	queue         []newConnID
-	activeIDLimit uint64
+	queue           []newConnID
+	activeIDLimit   uint64
+	disableRotation bool
 
 	highestUsedSequenceNumber uint64 // the highest sequence number taken from the queue
 	pathMx                    sync.Mutex
@@ -247,7 +248,7 @@ func (h *connIDManager) SentPacket() {
 }
 
 func (h *connIDManager) shouldUpdateConnID() bool {
-	if !h.handshakeComplete {
+	if !h.handshakeComplete || h.disableRotation {
 		return false
 	}
 	// initiate the first change as early as possible (after handshake completion)

@@ -105,6 +105,7 @@ type clientHelloCut struct {
 
 type initialCryptoStream struct {
 	baseCryptoStream
+	protection *initialProtectionState
 
 	scramble bool
 	end      protocol.ByteCount
@@ -129,6 +130,9 @@ func newInitialCryptoStream(isClient bool) *initialCryptoStream {
 }
 
 func (s *initialCryptoStream) HasData() bool {
+	if s.protection != nil {
+		return s.hasProtectedData()
+	}
 	// The ClientHello might be written in multiple parts.
 	// In order to correctly split the ClientHello, we need the entire ClientHello has been queued.
 	if s.scramble && s.writeOffset == 0 && s.cuts[0].start == protocol.InvalidByteCount {
@@ -186,6 +190,9 @@ func (s *initialCryptoStream) Write(p []byte) (int, error) {
 }
 
 func (s *initialCryptoStream) PopCryptoFrame(maxLen protocol.ByteCount) *wire.CryptoFrame {
+	if s.protection != nil {
+		return s.popProtectedFrame(maxLen)
+	}
 	if !s.scramble {
 		return s.baseCryptoStream.PopCryptoFrame(maxLen)
 	}

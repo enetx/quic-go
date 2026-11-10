@@ -14,6 +14,7 @@ import (
 	"github.com/enetx/quic-go/http3/qlog"
 	"github.com/enetx/quic-go/qlogwriter"
 	"github.com/enetx/quic-go/quicvarint"
+	"github.com/quic-go/qpack"
 )
 
 // GreaseFrame is an RFC 9114 reserved frame (type 0x1f*N+0x21).
@@ -31,19 +32,43 @@ type RequestPreparationError struct{ err error }
 func (e *RequestPreparationError) Error() string { return "http3: preparing request: " + e.err.Error() }
 func (e *RequestPreparationError) Unwrap() error { return e.err }
 
+// RequestBodyReadInfo describes the validated outgoing request before QPACK
+// state changes. HeaderFields contains the actual wire fields, including
+// implicit headers. It is a private copy and may be retained by the callback.
+// Request must not be mutated. BufferSize is the effective body read buffer.
+type RequestBodyReadInfo struct {
+	Request      *http.Request
+	HeaderFields []qpack.HeaderField
+	BufferSize   int
+}
+
 // WireConfig adds optional client wire behavior. Nil preserves upstream behavior.
 // Factories may run concurrently on different connections and must not mutate
 // requests or reenter the transport. Returned payloads are copied before use.
 type WireConfig struct {
+	// CoalesceInitialSettings stages control-stream data before the first
+	// post-handshake flight when peer credit allows. Backpressure falls back
+	// to asynchronous writes on the same stream. Factories must not block.
+	CoalesceInitialSettings bool
 	// RequestBodyBufferSize controls reads from request bodies. Zero uses 8 KiB.
 	RequestBodyBufferSize int
 	// RequestBodyBufferSizePolicy overrides the fixed size for a request body.
 	// It receives ContentLength (-1 if unknown) and must be concurrency safe.
 	// Returning zero selects the default. Valid sizes are at most 16 MiB.
 	RequestBodyBufferSizePolicy func(contentLength int64) int
+	// RequestBodyFirstReadSizePolicy caps the first nonempty body read. Zero
+	// uses BufferSize. Results must be between zero and BufferSize. It runs
+	// before request bytes or QPACK state changes and must be concurrency safe.
+	RequestBodyFirstReadSizePolicy func(RequestBodyReadInfo) int
 	// MaxDataFrameSize limits request DATA payloads. Zero preserves one frame
 	// per Write. This does not control QUIC packet boundaries.
 	MaxDataFrameSize int
+
+	// SettingsGrease generates one reserved SETTINGS identifier/value per
+	// connection, before any control-stream bytes. Nil adds nothing. The callback
+	// must not block or reenter the transport. IDs must be 0x1f*N+0x21 and both
+	// values must fit QUIC integers. It cannot replace existing settings.
+	SettingsGrease func() (uint64, uint64, error)
 
 	// ControlGreaseFrames runs once per connection, after SETTINGS.
 	ControlGreaseFrames func() ([]GreaseFrame, error)
