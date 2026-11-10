@@ -15,7 +15,7 @@ import (
 func TestLegacyAckFrequencyWire(t *testing.T) {
 	// Independent Neqo frame.rs vector: seq=10, tolerance=5, delay=2000us,
 	// followed by exactly one ignore_order byte, rather than a QUIC varint.
-	// https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/third_party/rust/neqo-transport/src/frame.rs
+	// https://github.com/mozilla-firefox/firefox/blob/FIREFOX_160_0_RELEASE/third_party/rust/neqo-transport/src/frame.rs
 	encoded, err := hex.DecodeString("40af0a0547d001")
 	require.NoError(t, err)
 	f, n, err := parseLegacyAckFrequencyFrame(append(encoded[2:], 0x01))

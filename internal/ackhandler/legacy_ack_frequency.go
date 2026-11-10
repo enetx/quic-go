@@ -32,7 +32,7 @@ func (h *ReceivedPacketHandler) HandleLegacyAckFrequency(f *wire.LegacyAckFreque
 	if f.AckElicitingThreshold == 0 {
 		return &qerr.TransportError{ErrorCode: qerr.FrameEncodingError, FrameType: uint64(wire.FrameTypeAckFrequency), ErrorMessage: "zero legacy ACK_FREQUENCY tolerance"}
 	}
-	// https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/third_party/rust/neqo-transport/src/tracking.rs
+	// https://github.com/mozilla-firefox/firefox/blob/FIREFOX_160_0_RELEASE/third_party/rust/neqo-transport/src/tracking.rs
 	// Neqo accepts equal sequence numbers; the later draft's strictly newer
 	// sequence rule must not be applied to this format.
 	if f.SequenceNumber >= s.sequence {

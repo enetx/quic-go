@@ -279,9 +279,9 @@ The tracker uses the requested tolerance, delay and ordering flag after the firs
 valid update. Equal sequence numbers replace state, older sequences are ignored,
 and an already pending ACK deadline is retained. Initial/Handshake trackers and
 native behavior when unset are preserved. Source references:
-[Firefox legacy frame parser](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/third_party/rust/neqo-transport/src/frame.rs),
-[receiver validation](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/third_party/rust/neqo-transport/src/connection/mod.rs), and
-[sequence/timer rules](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_159_0_1_RELEASE/third_party/rust/neqo-transport/src/tracking.rs).
+[Firefox legacy frame parser](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_160_0_RELEASE/third_party/rust/neqo-transport/src/frame.rs),
+[receiver validation](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_160_0_RELEASE/third_party/rust/neqo-transport/src/connection/mod.rs), and
+[sequence/timer rules](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_160_0_RELEASE/third_party/rust/neqo-transport/src/tracking.rs).
 
 Transport-parameter layout preserves this known engine field even though its
 number is congruent to 27 modulo 31. Public custom-parameter injection remains
