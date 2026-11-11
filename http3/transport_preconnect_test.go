@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +16,114 @@ import (
 	"github.com/enetx/quic-go/internal/testdata"
 	"github.com/stretchr/testify/require"
 )
+
+type preconnectSessionCache struct {
+	tls.ClientSessionCache
+	stored chan struct{}
+}
+
+func (c *preconnectSessionCache) Put(key string, state *tls.ClientSessionState) {
+	c.ClientSessionCache.Put(key, state)
+	if state != nil {
+		select {
+		case c.stored <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func TestPreconnectEarlyKeepsPooledConnectionBeforeHandshake(t *testing.T) {
+	gate := make(chan struct{})
+	var release sync.Once
+	tlsConfig := testdata.GetTLSConfig().Clone()
+	var handshakes, calls atomic.Int32
+	tlsConfig.GetConfigForClient = func(info *tls.ClientHelloInfo) (*tls.Config, error) {
+		if handshakes.Add(1) == 1 {
+			return nil, nil
+		}
+		select {
+		case <-gate:
+			return nil, nil
+		case <-info.Context().Done():
+			return nil, info.Context().Err()
+		}
+	}
+	udp, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer udp.Close()
+	server := &Server{TLSConfig: tlsConfig, QUICConfig: &quic.Config{Allow0RTT: true}, Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { calls.Add(1); w.Write([]byte("ok")) })}
+	defer server.Close()
+	go server.Serve(udp)
+	cache := &preconnectSessionCache{ClientSessionCache: tls.NewLRUClientSessionCache(4), stored: make(chan struct{}, 4)}
+	tr := &Transport{TLSClientConfig: &tls.Config{ServerName: "localhost", RootCAs: testdata.GetRootCA(), ClientSessionCache: cache}}
+	defer tr.Close()
+	defer release.Do(func() { close(gate) })
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+udp.LocalAddr().String(), nil)
+	require.NoError(t, err)
+	response, err := tr.RoundTrip(req)
+	require.NoError(t, err)
+	_, err = io.Copy(io.Discard, response.Body)
+	require.NoError(t, err)
+	response.Body.Close()
+	select {
+	case <-cache.stored:
+	case <-ctx.Done():
+		t.Fatal("no session ticket")
+	}
+	tr.CloseIdleConnections()
+	conn, err := tr.PreconnectEarly(ctx, udp.LocalAddr().String())
+	require.NoError(t, err)
+	select {
+	case <-conn.HandshakeComplete():
+		t.Fatal("early preparation waited for the gated handshake")
+	default:
+	}
+	require.EqualValues(t, 1, calls.Load(), "preparation must not send a request")
+	confirmed := make(chan error, 1)
+	go func() { confirmed <- tr.Preconnect(ctx, udp.LocalAddr().String()) }()
+	release.Do(func() { close(gate) })
+	require.NoError(t, <-confirmed)
+	require.EqualValues(t, 2, handshakes.Load(), "both preparations must share the same pooled connection")
+	response, err = tr.RoundTrip(req)
+	require.NoError(t, err)
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	require.EqualValues(t, 2, calls.Load())
+}
+
+func TestCoalescedPreparationUsesSelectedAddressConnection(t *testing.T) {
+	udp, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer udp.Close()
+	var requests atomic.Int32
+	server := &Server{TLSConfig: testdata.GetTLSConfig(), Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { requests.Add(1); io.WriteString(w, "selected") })}
+	defer server.Close()
+	go server.Serve(udp)
+	tr := &Transport{TLSClientConfig: &tls.Config{ServerName: "localhost", RootCAs: testdata.GetRootCA()}, WireConfig: &WireConfig{CoalesceInitialSettings: true}, Dial: func(ctx context.Context, _ string, config *tls.Config, q *quic.Config) (*quic.Conn, error) {
+		// Both candidates invoke the application-ready hook. Returning the
+		// second simulates an address race whose first ready candidate loses.
+		first, err := quic.DialAddr(ctx, udp.LocalAddr().String(), config, q)
+		if err != nil {
+			return nil, err
+		}
+		defer first.CloseWithError(0, "unselected address")
+		return quic.DialAddr(ctx, udp.LocalAddr().String(), config, q)
+	}}
+	defer tr.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+udp.LocalAddr().String(), nil)
+	require.NoError(t, err)
+	response, err := tr.RoundTrip(req)
+	require.NoError(t, err)
+	data, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	response.Body.Close()
+	require.Equal(t, "selected", string(data))
+	require.EqualValues(t, 1, requests.Load())
+}
 
 func TestPreconnectHTTP3PoolWithoutRequest(t *testing.T) {
 	var calls, dials atomic.Int32

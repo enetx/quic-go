@@ -3,6 +3,8 @@ package http3
 import (
 	"context"
 	"net"
+
+	"github.com/enetx/quic-go"
 )
 
 // Preconnect prepares a pooled HTTP/3 connection to address (host:port),
@@ -11,19 +13,33 @@ import (
 // Cancellation releases this caller; a shared connection used by another caller
 // is retained. Otherwise a failed or abandoned attempt is removed and closed.
 func (t *Transport) Preconnect(ctx context.Context, address string) error {
+	_, err := t.preconnect(ctx, address, false)
+	return err
+}
+
+// PreconnectEarly prepares a pooled connection without sending an HTTP request.
+// It returns when cached 0-RTT keys are available, or after the full handshake
+// when early data is unavailable. The returned connection remains owned by the
+// transport. Early readiness does not authenticate the current handshake.
+// A custom Dial callback must itself support returning an early connection.
+func (t *Transport) PreconnectEarly(ctx context.Context, address string) (*quic.Conn, error) {
+	return t.preconnect(ctx, address, true)
+}
+
+func (t *Transport) preconnect(ctx context.Context, address string, early bool) (*quic.Conn, error) {
 	if _, _, err := net.SplitHostPort(address); err != nil {
-		return err
+		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
-		return context.Cause(ctx)
+		return nil, context.Cause(ctx)
 	}
 	t.initOnce.Do(func() { t.initErr = t.init() })
 	if t.initErr != nil {
-		return t.initErr
+		return nil, t.initErr
 	}
 	client, _, err := t.getClient(ctx, address, false)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var failed bool
 	defer func() {
@@ -47,28 +63,30 @@ func (t *Transport) Preconnect(ctx context.Context, address string) error {
 	}
 	if err := wait(client.dialing); err != nil {
 		failed = true
-		return err
+		return nil, err
 	}
 	if client.dialErr != nil {
 		failed = true
-		return client.dialErr
+		return nil, client.dialErr
 	}
-	select {
-	case <-client.conn.HandshakeComplete():
-	case <-client.conn.Context().Done():
-		failed = true
-		return context.Cause(client.conn.Context())
-	case <-ctx.Done():
-		failed = true
-		return context.Cause(ctx)
+	if !early {
+		select {
+		case <-client.conn.HandshakeComplete():
+		case <-client.conn.Context().Done():
+			failed = true
+			return nil, context.Cause(client.conn.Context())
+		case <-ctx.Done():
+			failed = true
+			return nil, context.Cause(ctx)
+		}
 	}
 	if client.conn.Context().Err() != nil {
 		failed = true
-		return context.Cause(client.conn.Context())
+		return nil, context.Cause(client.conn.Context())
 	}
 	if ctx.Err() != nil {
 		failed = true
-		return context.Cause(ctx)
+		return nil, context.Cause(ctx)
 	}
-	return nil
+	return client.conn, nil
 }

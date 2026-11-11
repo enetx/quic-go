@@ -362,10 +362,30 @@ It waits for a verified handshake, including when the underlying dial uses early
 data, without sending a request. Failed or canceled preparation removes/closes an
 attempt only when no other pool user holds it. A shared dial survives cancellation
 of one waiting caller. Successful preparation leaves the connection in the normal
-pool; idle cleanup and Close retain ownership. Source files of the upstream
-transport are unchanged. Tests cover real HTTP/3 reuse and shared cancellation.
+pool; idle cleanup and Close retain ownership. `PreconnectEarly` exposes the
+same pool entry when early keys are ready, returning its transport-owned Conn;
+it neither sends an HTTP request nor treats early readiness as authentication.
+Cold connections still wait for the handshake. Tests cover real HTTP/3 reuse,
+shared cancellation and a gated resumable handshake.
+
+With `CoalesceInitialSettings`, the small dial hook in `http3/transport.go`
+keeps setup per candidate connection. A custom address dialer can invoke several
+application-ready callbacks and return a different winner. Setup must follow
+that winner, rather than the first callback; temporary candidate references are
+released when dial completes. A two-candidate regression reproduces the failure
+with the old single sync.Once and passes with candidate-specific setup.
 
 Protocol competition, timers, browser policy and body ownership remain in Surf.
+
+`SessionVersion` reads the negotiated version from the existing client-side
+session-state metadata block. Its local format revision is 6 (version followed
+by the remembered transport parameters); revision 5 remains readable for
+ordinary resumption/0-RTT. The number and order of application Extra entries are
+preserved. This metadata never changes the opaque server ticket or TLS wire
+format. Generic metadata, malformed/legacy states and authenticated compatible
+switches are tested. Choosing an initial version from a live ticket remains
+Surf policy, including origin isolation, allowed versions, cache eviction and
+expiry; the QUIC engine does not add an origin-history database.
 
 ## Client congestion control
 

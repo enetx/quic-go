@@ -73,6 +73,13 @@ func TestCompatibleVersionTLSKeysAndSessionResumption(t *testing.T) {
 	client, server := run(protocol.Version1, protocol.Version2, true)
 	require.True(t, client.ConnectionState().DidResume)
 	require.True(t, server.ConnectionState().Used0RTT)
+	saved, ok := clientConfig.ClientSessionCache.Get("quic:6b3343cf:localhost")
+	require.True(t, ok)
+	_, state, err := saved.ResumptionState()
+	require.NoError(t, err)
+	storedVersion, ok := SessionVersion(state.Extra)
+	require.True(t, ok)
+	require.Equal(t, protocol.Version2, storedVersion, "ticket metadata follows the authenticated switch")
 
 	// The ticket issued after switching belongs to v2 and can resume a direct v2 dial.
 	direct, _ := run(protocol.Version2, protocol.Version2, true)

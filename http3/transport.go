@@ -404,10 +404,29 @@ func (t *Transport) dial(ctx context.Context, hostname string) (*quic.Conn, clie
 		}
 	}
 	config := t.QUICConfig
-	var once sync.Once
-	var client clientConn
+	// A custom dialer can prepare several address candidates. Initial SETTINGS
+	// belong to each candidate's own HTTP/3 connection, not whichever became
+	// application-ready first. Retain only candidates still awaiting selection.
+	var clientsMu sync.Mutex
+	clients := make(map[*quic.Conn]clientConn)
+	var prepared bool
+	defer func() {
+		clientsMu.Lock()
+		prepared = true
+		clear(clients)
+		clientsMu.Unlock()
+	}()
 	ensureClient := func(conn *quic.Conn) clientConn {
-		once.Do(func() { client = t.newClientConn(conn) })
+		clientsMu.Lock()
+		defer clientsMu.Unlock()
+		if prepared {
+			return nil // A late, unselected candidate no longer needs setup.
+		}
+		client := clients[conn]
+		if client == nil {
+			client = t.newClientConn(conn)
+			clients[conn] = client
+		}
 		return client
 	}
 	if t.WireConfig != nil && t.WireConfig.CoalesceInitialSettings {

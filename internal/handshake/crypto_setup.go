@@ -3,6 +3,7 @@ package handshake
 import (
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -23,7 +24,7 @@ type quicVersionContextKey struct{}
 
 var QUICVersionContextKey = &quicVersionContextKey{}
 
-const clientSessionStateRevision = 5
+const clientSessionStateRevision = 6
 
 type cryptoSetup struct {
 	tlsConf *tls.Config
@@ -350,6 +351,7 @@ func (h *cryptoSetup) handleTransportParameters(data []byte) error {
 func (h *cryptoSetup) marshalDataForSessionState(earlyData bool) []byte {
 	b := make([]byte, 0, 256)
 	b = quicvarint.Append(b, clientSessionStateRevision)
+	b = binary.BigEndian.AppendUint32(b, uint32(h.version))
 	if earlyData {
 		// only save the transport parameters for 0-RTT enabled session tickets
 		return h.peerParams.MarshalForSessionTicket(b)
@@ -379,7 +381,12 @@ func decodeDataFromSessionState(b []byte, earlyData bool) (*wire.TransportParame
 		return nil, err
 	}
 	b = b[l:]
-	if ver != clientSessionStateRevision {
+	if ver == clientSessionStateRevision {
+		if len(b) < 4 {
+			return nil, errors.New("truncated session QUIC version")
+		}
+		b = b[4:]
+	} else if ver != 5 { // Read native cached states written before version metadata.
 		return nil, fmt.Errorf("mismatching version. Got %d, expected %d", ver, clientSessionStateRevision)
 	}
 	if !earlyData {
