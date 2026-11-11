@@ -316,6 +316,7 @@ type RequestStream struct {
 	bodyFirstReadSizePolicy func(RequestBodyReadInfo) int
 	bodyFirstReadSize       int
 	priorityUpdater         *PriorityUpdater
+	closeAfterHeaders       bool
 
 	responseBody io.ReadCloser // set by ReadResponse
 
@@ -508,7 +509,8 @@ func (s *RequestStream) sendRequestHeader(req *http.Request) error {
 			return nil
 		})
 	}
-	err := maybeReplaceError(s.requestWriter.WriteRequestHeader(s.str.datagramStream, req, s.requestedGzip, s.str.StreamID(), s.str.qlogger, prepareBody...))
+	writer := &requestHeaderWriter{Writer: s.str.datagramStream, fin: s.closeAfterHeaders}
+	err := maybeReplaceError(s.requestWriter.WriteRequestHeader(writer, req, s.requestedGzip, s.str.StreamID(), s.str.qlogger, prepareBody...))
 	if err != nil {
 		return err
 	}

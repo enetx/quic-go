@@ -59,6 +59,7 @@ func (c *ClientConn) startInitialSettings(datagrams bool, settings g.MapOrd[uint
 		err = stream.TryWriteAll(data)
 		if !errors.Is(err, quic.ErrWouldBlock) {
 			if err == nil {
+				c.controlWriter.attachStream(stream)
 				go c.controlWriter.run(stream)
 			}
 			finish(err)
@@ -71,6 +72,7 @@ func (c *ClientConn) startInitialSettings(datagrams bool, settings g.MapOrd[uint
 			err = io.ErrShortWrite
 		}
 		if err == nil {
+			c.controlWriter.attachStream(stream)
 			go c.controlWriter.run(stream)
 		}
 		finish(err)

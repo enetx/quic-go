@@ -13,15 +13,15 @@ import (
 func TestPriorityUpdaterBackpressure(t *testing.T) {
 	conn, _ := newConnPair(t)
 	c := &ClientConn{rawConn: &rawConn{conn: conn}, wireConfig: &WireConfig{}}
-	c.controlWriter = &clientControlWriter{owner: c.rawConn, queue: make(chan []byte, 1)}
-	c.controlWriter.queue <- []byte("occupied")
+	c.controlWriter = &clientControlWriter{owner: c.rawConn, queue: make(chan controlWrite, 1)}
+	c.controlWriter.queue <- controlWrite{data: []byte("occupied")}
 	done := make(chan struct{})
 	p := &PriorityUpdater{request: context.Background(), connection: conn.Context(), done: done, ready: true, urgency: 3,
 		send: func(u int8, i bool) error { return c.enqueuePriorityUpdate(4, u, i) }}
 	require.ErrorContains(t, p.Update(2, true), "queue is full")
 	<-c.controlWriter.queue
 	require.NoError(t, p.Update(2, true))
-	data := <-c.controlWriter.queue
+	data := (<-c.controlWriter.queue).data
 	kind, n, err := quicvarint.Parse(data)
 	require.NoError(t, err)
 	require.EqualValues(t, 0xf0700, kind)

@@ -214,7 +214,7 @@ func (t *Transport) roundTripOpt(req *http.Request, opt RoundTripOpt) (*http.Res
 		return nil, fmt.Errorf("http3: invalid method %q", req.Method)
 	}
 	for k, vv := range req.Header {
-		if k == httpcommon.HeaderOrderKey || k == httpcommon.PHeaderOrderKey {
+		if httpcommon.IsMetadataKey(k) {
 			continue
 		}
 		if !httpguts.ValidHeaderFieldName(k) {

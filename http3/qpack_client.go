@@ -88,6 +88,10 @@ type QPACKConfig struct {
 	// EncoderZeroCapacity sends a capacity-zero instruction even when the peer
 	// offers no table, initializing an otherwise lazy encoder stream.
 	EncoderZeroCapacity bool
+	// EncoderCapacityRequiresSetting suppresses capacity announcements when
+	// the peer omitted SETTINGS_QPACK_MAX_TABLE_CAPACITY. An explicit zero
+	// remains distinct and is governed by EncoderZeroCapacity.
+	EncoderCapacityRequiresSetting bool
 	// EncoderCapacityTiming selects immediate queuing after SETTINGS or queuing
 	// while encoding the next HEADERS block. Network delivery remains asynchronous.
 	EncoderCapacityTiming QPACKCapacityTiming
@@ -265,11 +269,11 @@ func (q *clientQPACK) prepare() error {
 	return nil
 }
 
-func (q *clientQPACK) onSettings(capacity, blockedStreams uint64) error {
+func (q *clientQPACK) onSettings(capacity, blockedStreams uint64, capacityAdvertised bool) error {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 	q.pendingCapacity = min(capacity, q.config.EncoderTableCapacity)
-	q.capacityPending = q.pendingCapacity > 0 || q.config.EncoderZeroCapacity
+	q.capacityPending = q.pendingCapacity > 0 || q.config.EncoderZeroCapacity && (!q.config.EncoderCapacityRequiresSetting || capacityAdvertised)
 	if err := q.fieldEncoder.Configure(capacity, q.pendingCapacity, blockedStreams); err != nil {
 		return err
 	}

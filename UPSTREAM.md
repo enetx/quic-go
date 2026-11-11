@@ -132,7 +132,7 @@ The protocol matrix, reserved IDs, lazy type bytes, capacity bounds, snapshots,
 limited stream credit, critical-stream STOP_SENDING and dynamic response feedback
 are tested in `tests/http3/qpack_client_test.go`.
 
-Surf now owns independent Chromium 156 / Firefox 160 QUIC ClientHello fixtures.
+Surf now owns independent Chrome 157 / Firefox 160 QUIC ClientHello fixtures.
 Its tests decrypt Initial packets independently and compare TLS, ordered SETTINGS,
 headers and supported transport parameters. Manual warmed requests to the external
 HTTP/3 endpoint pass, including the Firefox response that previously exposed the
@@ -433,3 +433,23 @@ Rust nor C++; reproducible developer runners and hashes are in
 `internal/congestion/testdata/README.md`. Surf additionally verifies complete
 bidirectional transfers under deterministic packet loss with both profiles.
 These are source and transport checks, not proof of identical browser NIC timing.
+
+
+## Grouped application stream writes
+
+`Conn.TryWriteStreamBatch` stages a bounded list of existing local-stream writes
+and optional FINs in one connection-loop turn. It never waits for stream credit
+or a competing writer, returns the accepted prefix, and preserves normal packet
+size and congestion limits. The generic implementation lives in
+`stream_write_batch.go`; the connection loop has one channel and two dispatch
+hooks. Default request writes do not use the operation.
+
+Optional `WireConfig.CoalesceRequestHeaders` groups initial priority and HEADERS,
+including FIN only for automatically managed bodyless requests. Manual request
+streams stay open. The single control writer retains ordering and uses the
+asynchronous path under backpressure. Thirty-request packet tests, manual DATA,
+flow-control blockage, partial batches and close/error cases are covered.
+
+`QPACKConfig.EncoderCapacityRequiresSetting` distinguishes an omitted peer table
+setting from an explicit zero while preserving the independent
+EncoderZeroCapacity switch. Browser choices remain exclusively in Surf.

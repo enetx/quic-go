@@ -273,7 +273,7 @@ func (c *rawConn) handleControlStream(str *quic.ReceiveStream) {
 		Other:                 sf.Other,
 	}
 	if c.clientQPACK != nil {
-		if err := c.clientQPACK.onSettings(sf.Other.Get(1).UnwrapOrDefault(), sf.Other.Get(7).UnwrapOrDefault()); err != nil {
+		if err := c.clientQPACK.onSettings(sf.Other.Get(1).UnwrapOrDefault(), sf.Other.Get(7).UnwrapOrDefault(), sf.Other.Get(1).IsSome()); err != nil {
 			c.CloseWithError(quic.ApplicationErrorCode(ErrCodeExcessiveLoad), err.Error())
 			return
 		}

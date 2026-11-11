@@ -4,7 +4,7 @@ go 1.27
 
 require (
 	github.com/enetx/g v1.1.1
-	github.com/enetx/http v1.0.34
+	github.com/enetx/http v1.0.37
 	github.com/quic-go/go-ossfuzz-seeds v0.1.0
 	github.com/quic-go/qpack v0.6.0
 	github.com/stretchr/testify v1.12.1

@@ -188,6 +188,7 @@ type Conn struct {
 
 	notifyReceivedPacket chan struct{}
 	sendingScheduled     chan struct{}
+	streamWriteBatches   chan streamWriteBatch
 	receivedPackets      receivedPacketQueue
 
 	// closeChan is used to notify the run loop that it should terminate
@@ -574,6 +575,7 @@ func (c *Conn) preSetup(r *pathReceiver) {
 	c.notifyReceivedPacket = make(chan struct{}, 1)
 	c.closeChan = make(chan struct{}, 1)
 	c.sendingScheduled = make(chan struct{}, 1)
+	c.streamWriteBatches = make(chan streamWriteBatch, 1)
 	c.handshakeCompleteChan = make(chan struct{})
 
 	now := monotime.Now()
@@ -677,6 +679,8 @@ runLoop:
 				break runLoop
 			case <-c.timer.C:
 			case <-c.sendingScheduled:
+			case batch := <-c.streamWriteBatches:
+				c.writeStreamBatch(batch)
 			case <-sendQueueAvailable:
 			case <-c.notifyReceivedPacket:
 				wasProcessed, err := c.handlePackets()
@@ -689,6 +693,14 @@ runLoop:
 					continue
 				}
 			}
+		}
+
+		// Stage one application batch before packetization, including when
+		// incoming packets or pacing kept the loop from waiting on the select.
+		select {
+		case batch := <-c.streamWriteBatches:
+			c.writeStreamBatch(batch)
+		default:
 		}
 
 		// Check for loss detection timeout.

@@ -7,6 +7,8 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/enetx/http"
 	httpcommon "github.com/enetx/http/headerorder"
@@ -50,6 +52,10 @@ type WireConfig struct {
 	// post-handshake flight when peer credit allows. Backpressure falls back
 	// to asynchronous writes on the same stream. Factories must not block.
 	CoalesceInitialSettings bool
+	// CoalesceRequestHeaders stages initial priority, request HEADERS and a
+	// bodyless request's FIN in one connection-loop turn. Congestion and packet
+	// size limits still apply. Blocked control streams retain asynchronous writes.
+	CoalesceRequestHeaders bool
 	// RequestBodyBufferSize controls reads from request bodies. Zero uses 8 KiB.
 	RequestBodyBufferSize int
 	// RequestBodyBufferSizePolicy overrides the fixed size for a request body.
@@ -128,20 +134,34 @@ func appendGreaseFrames(frames []GreaseFrame) ([]byte, error) {
 // stream never blocks request HEADERS indefinitely or creates per-request goroutines.
 type clientControlWriter struct {
 	owner   *rawConn
-	queue   chan []byte
+	queue   chan controlWrite
+	mu      sync.Mutex
+	stream  *quic.SendStream
+	pending atomic.Int32
 	initial []byte
 }
 
+type controlWrite struct {
+	data     []byte
+	recorded bool
+}
+
 func (w *clientControlWriter) enqueue(data []byte) error {
+	return w.enqueueWrite(controlWrite{data: data})
+}
+
+func (w *clientControlWriter) enqueueWrite(data controlWrite) error {
 	select {
 	case <-w.owner.conn.Context().Done():
 		return context.Cause(w.owner.conn.Context())
 	default:
 	}
+	w.pending.Add(1)
 	select {
 	case w.queue <- data:
 		return nil
 	default:
+		w.pending.Add(-1)
 		return errors.New("http3: outgoing control frame queue is full")
 	}
 }
@@ -153,12 +173,16 @@ func (w *clientControlWriter) run(stream *quic.SendStream) {
 		}
 		defer w.owner.RemoveQlogProducer()
 	}
-	write := func(data []byte) bool {
+	write := func(data []byte, recorded bool) bool {
 		if len(data) == 0 {
 			return true
 		}
-		recordWireFrames(w.owner.qlogger, stream.StreamID(), data)
+		w.mu.Lock()
+		if !recorded {
+			recordWireFrames(w.owner.qlogger, stream.StreamID(), data)
+		}
 		n, err := stream.Write(data)
+		w.mu.Unlock()
 		if err == nil && n != len(data) {
 			err = io.ErrShortWrite
 		}
@@ -168,8 +192,12 @@ func (w *clientControlWriter) run(stream *quic.SendStream) {
 		}
 		return true
 	}
-	if !write(w.initial) {
-		return
+	if len(w.initial) > 0 {
+		ok := write(w.initial, false)
+		w.pending.Add(-1)
+		if !ok {
+			return
+		}
 	}
 	for {
 		select {
@@ -179,7 +207,9 @@ func (w *clientControlWriter) run(stream *quic.SendStream) {
 			w.owner.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "control stream closed")
 			return
 		case data := <-w.queue:
-			if !write(data) {
+			ok := write(data.data, data.recorded)
+			w.pending.Add(-1)
+			if !ok {
 				return
 			}
 		}
@@ -219,12 +249,15 @@ func (c *ClientConn) configureWire(config *WireConfig) {
 	}
 	c.wireConfig = config.Clone()
 	// Install the control writer before the startup goroutine can send SETTINGS.
-	c.controlWriter = &clientControlWriter{owner: c.rawConn, queue: make(chan []byte, 64)}
+	c.controlWriter = &clientControlWriter{owner: c.rawConn, queue: make(chan controlWrite, 64)}
 	c.requestWriter.greaseFrames = config.RequestGreaseFrames
+	if config.CoalesceRequestHeaders {
+		c.requestWriter.writeRequestHeaders = c.writeRequestHeaders
+	}
 }
 
 func (c *ClientConn) queuePriorityUpdate(req *http.Request, id quic.StreamID) error {
-	if c.wireConfig == nil || !c.wireConfig.SendPriorityUpdates {
+	if c.wireConfig == nil || !c.wireConfig.SendPriorityUpdates || c.wireConfig.CoalesceRequestHeaders {
 		return nil
 	}
 	u, incremental, explicit := requestPriority(req)
@@ -247,6 +280,10 @@ func requestPriority(req *http.Request) (int8, bool, bool) {
 }
 
 func (c *ClientConn) enqueuePriorityUpdate(id quic.StreamID, urgency int8, incremental bool) error {
+	return c.controlWriter.enqueue(c.priorityUpdateFrame(id, urgency, incremental))
+}
+
+func (c *ClientConn) priorityUpdateFrame(id quic.StreamID, urgency int8, incremental bool) []byte {
 	value := ""
 	if urgency != defaultPriorityUrgency {
 		value = "u=" + strconv.Itoa(int(urgency))
@@ -264,5 +301,5 @@ func (c *ClientConn) enqueuePriorityUpdate(id quic.StreamID, urgency int8, incre
 	payload = append(payload, value...)
 	data := quicvarint.Append(nil, 0xf0700)
 	data = quicvarint.Append(data, uint64(len(payload)))
-	return c.controlWriter.enqueue(append(data, payload...))
+	return append(data, payload...)
 }

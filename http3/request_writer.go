@@ -29,6 +29,7 @@ type requestWriter struct {
 	qpackFields          []qpack.HeaderField
 	collectBodyFields    bool
 	beforeRequestHeaders func(*http.Request, quic.StreamID) error
+	writeRequestHeaders  func(io.Writer, *http.Request, quic.StreamID, []byte) error
 	greaseFrames         func(*http.Request) ([]GreaseFrame, error)
 	qpackConfig          *QPACKConfig
 	mutex                sync.Mutex
@@ -50,7 +51,11 @@ func (w *requestWriter) WriteRequestHeader(wr io.Writer, req *http.Request, gzip
 	if err := w.writeHeaders(buf, req, gzip, streamID, qlogger, prepareBody...); err != nil {
 		return err
 	}
-	if _, err := wr.Write(buf.Bytes()); err != nil {
+	if w.writeRequestHeaders != nil {
+		if err := w.writeRequestHeaders(wr, req, streamID, buf.Bytes()); err != nil {
+			return err
+		}
+	} else if _, err := wr.Write(buf.Bytes()); err != nil {
 		return err
 	}
 	trace := httptrace.ContextClientTrace(req.Context())
@@ -185,7 +190,7 @@ func (w *requestWriter) encodeHeaders(req *http.Request, addGzipHeader bool, tra
 	// continue to reuse the hpack encoder for future requests)
 	for k, vv := range req.Header {
 		// Skip validation for special header order keys
-		if k == httpcommon.HeaderOrderKey || k == httpcommon.PHeaderOrderKey {
+		if httpcommon.IsMetadataKey(k) {
 			continue
 		}
 		if !httpguts.ValidHeaderFieldName(k) {

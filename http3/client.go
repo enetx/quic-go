@@ -465,6 +465,7 @@ func (c *ClientConn) sendRequestBody(str *RequestStream, body io.ReadCloser, con
 func (c *ClientConn) doRequest(req *http.Request, str *RequestStream) (*http.Response, error) {
 	trace := httptrace.ContextClientTrace(req.Context())
 	var sendingReqFailed bool
+	str.closeAfterHeaders = (req.Body == nil || req.Body == http.NoBody) && len(req.Trailer) == 0
 	if err := str.sendRequestHeader(req); err != nil {
 		traceWroteRequest(trace, err)
 		if _, local := errors.AsType[*RequestPreparationError](err); local {
