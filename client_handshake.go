@@ -26,6 +26,12 @@ type StreamReceiveWindows struct{ BidiLocal, BidiRemote, Uni uint64 }
 // behavior. It contains no browser defaults or preset selection. Extension values
 // and TLS templates are supplied by the application. Server behavior is unchanged.
 type ClientHandshake struct {
+	// InitialRTT supplies a local estimate until the first RTT measurement.
+	// Zero retains native initialization. It does not advertise a parameter.
+	InitialRTT time.Duration
+	// InitialPTOMultiplier scales the initial estimate before any measurement.
+	// Zero retains the native factor of two. Positive values are 1..16.
+	InitialPTOMultiplier uint32
 	// CompatibleVersionNegotiation enables RFC 9368 / RFC 9369 client switching
 	// between v1 and v2, with authenticated downgrade checks. A layout can supply
 	// version_information ordering and GREASE; otherwise Config.Versions is used.
@@ -174,6 +180,12 @@ func (h *ClientHandshake) Clone() *ClientHandshake {
 func (h *ClientHandshake) Validate() error {
 	if h == nil {
 		return nil
+	}
+	if h.InitialPTOMultiplier > 16 {
+		return fmt.Errorf("initial PTO multiplier must be between 1 and 16, or zero")
+	}
+	if h.InitialRTT < 0 || h.InitialRTT > time.Duration((1<<63-1)/16) {
+		return fmt.Errorf("initial RTT must be nonnegative and fit probe timeout scaling")
 	}
 	if h.CongestionControl > CongestionControlCubicBytes || h.SlowStart > SlowStartHybrid {
 		return fmt.Errorf("invalid congestion control or slow start algorithm")

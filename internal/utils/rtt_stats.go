@@ -19,7 +19,9 @@ const DefaultInitialRTT = 100 * time.Millisecond
 
 // RTTStats provides round-trip statistics
 type RTTStats struct {
-	hasMeasurement bool
+	hasMeasurement       atomic.Bool
+	initialEstimate      time.Duration
+	initialPTOMultiplier uint32
 
 	minRTT        atomic.Int64 // nanoseconds
 	latestRTT     atomic.Int64 // nanoseconds
@@ -67,14 +69,36 @@ func (r *RTTStats) MaxAckDelay() time.Duration {
 
 // PTO gets the probe timeout duration.
 func (r *RTTStats) PTO(includeMaxAckDelay bool) time.Duration {
-	if !r.hasMeasurement {
-		return 2 * DefaultInitialRTT
+	if !r.hasMeasurement.Load() {
+		estimate := r.initialEstimate
+		if estimate == 0 {
+			estimate = DefaultInitialRTT
+		}
+		factor := r.initialPTOMultiplier
+		if factor == 0 {
+			factor = 2
+		}
+		return time.Duration(factor) * estimate
 	}
 	pto := r.SmoothedRTT() + max(4*r.MeanDeviation(), protocol.TimerGranularity)
 	if includeMaxAckDelay {
 		pto += r.MaxAckDelay()
 	}
 	return pto
+}
+
+// SetInitialPTOMultiplier applies an explicit policy before measurements exist.
+func (r *RTTStats) SetInitialPTOMultiplier(factor uint32) { r.initialPTOMultiplier = factor }
+
+// SetInitialEstimate explicitly seeds local recovery before measurements exist.
+// Token restoration keeps its existing behavior; caller policy is separate.
+func (r *RTTStats) SetInitialEstimate(estimate time.Duration) {
+	if r.hasMeasurement.Load() || estimate <= 0 {
+		return
+	}
+	r.initialEstimate = estimate
+	r.minRTT.Store(int64(estimate))
+	r.SetInitialRTT(estimate)
 }
 
 // UpdateRTT updates the RTT based on a new sample.
@@ -88,7 +112,7 @@ func (r *RTTStats) UpdateRTT(sendDelta, ackDelay time.Duration) {
 	// the client may cause a high ackDelay to result in underestimation of the
 	// r.minRTT.
 	minRTT := time.Duration(r.minRTT.Load())
-	if !r.hasMeasurement || minRTT > sendDelta {
+	if !r.hasMeasurement.Load() || minRTT > sendDelta {
 		minRTT = sendDelta
 		r.minRTT.Store(sendDelta.Nanoseconds())
 	}
@@ -102,10 +126,10 @@ func (r *RTTStats) UpdateRTT(sendDelta, ackDelay time.Duration) {
 	}
 	r.latestRTT.Store(sample.Nanoseconds())
 	// First time call.
-	if !r.hasMeasurement {
-		r.hasMeasurement = true
+	if !r.hasMeasurement.Load() {
 		r.smoothedRTT.Store(sample.Nanoseconds())
 		r.meanDeviation.Store(sample.Nanoseconds() / 2)
+		r.hasMeasurement.Store(true)
 	} else {
 		smoothedRTT := r.SmoothedRTT()
 		meanDev := time.Duration(oneMinusBeta*float32(r.MeanDeviation()/time.Microsecond)+rttBeta*float32((smoothedRTT-sample).Abs()/time.Microsecond)) * time.Microsecond
@@ -116,7 +140,7 @@ func (r *RTTStats) UpdateRTT(sendDelta, ackDelay time.Duration) {
 }
 
 func (r *RTTStats) HasMeasurement() bool {
-	return r.hasMeasurement
+	return r.hasMeasurement.Load()
 }
 
 // SetMaxAckDelay sets the max_ack_delay
@@ -131,7 +155,7 @@ func (r *RTTStats) SetInitialRTT(t time.Duration) {
 	// we might already have obtained an RTT measurement.
 	// This can happen if we received the ClientHello in multiple pieces, and one of those pieces was lost.
 	// Discard the restored value. A fresh measurement is always better.
-	if r.hasMeasurement {
+	if r.hasMeasurement.Load() {
 		return
 	}
 	r.smoothedRTT.Store(int64(t))
@@ -139,7 +163,8 @@ func (r *RTTStats) SetInitialRTT(t time.Duration) {
 }
 
 func (r *RTTStats) ResetForPathMigration() {
-	r.hasMeasurement = false
+	r.hasMeasurement.Store(false)
+	r.initialEstimate = 0
 	r.minRTT.Store(DefaultInitialRTT.Nanoseconds())
 	r.latestRTT.Store(DefaultInitialRTT.Nanoseconds())
 	r.smoothedRTT.Store(DefaultInitialRTT.Nanoseconds())
@@ -149,7 +174,9 @@ func (r *RTTStats) ResetForPathMigration() {
 
 func (r *RTTStats) Clone() *RTTStats {
 	out := &RTTStats{}
-	out.hasMeasurement = r.hasMeasurement
+	out.hasMeasurement.Store(r.hasMeasurement.Load())
+	out.initialEstimate = r.initialEstimate
+	out.initialPTOMultiplier = r.initialPTOMultiplier
 	out.minRTT.Store(r.minRTT.Load())
 	out.latestRTT.Store(r.latestRTT.Load())
 	out.smoothedRTT.Store(r.smoothedRTT.Load())

@@ -464,6 +464,12 @@ var newClientConnection = func(
 			s.rttStats.SetInitialRTT(token.rtt)
 		}
 	}
+	if h := s.config.ClientHandshake; h != nil {
+		if h.InitialRTT > 0 {
+			s.rttStats.SetInitialEstimate(h.InitialRTT)
+		}
+		s.rttStats.SetInitialPTOMultiplier(h.InitialPTOMultiplier)
+	}
 	s.sentPacketHandler = ackhandler.NewSentPacketHandler(
 		initialPacketNumber,
 		s.config.initialPacketSize(),
@@ -820,6 +826,9 @@ func (c *Conn) ConnectionState() ConnectionState {
 
 // ConnectionStats contains statistics about the QUIC connection
 type ConnectionStats struct {
+	// RTTMeasured is true after a valid RTT sample on the active path.
+	// Local initial estimates and token restoration do not set it.
+	RTTMeasured bool
 	// MinRTT is the estimate of the minimum RTT observed on the active network
 	// path.
 	MinRTT time.Duration
@@ -866,6 +875,7 @@ type ConnectionStats struct {
 // It can be called concurrently with other connection operations.
 func (c *Conn) ConnectionStats() ConnectionStats {
 	return ConnectionStats{
+		RTTMeasured:   c.rttStats.HasMeasurement(),
 		MinRTT:        c.rttStats.MinRTT(),
 		LatestRTT:     c.rttStats.LatestRTT(),
 		SmoothedRTT:   c.rttStats.SmoothedRTT(),

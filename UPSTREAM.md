@@ -50,6 +50,7 @@ values, presets or new configuration options are involved.
 | Extension | Own implementation | Existing source hooks |
 | --- | --- | --- |
 | Client controls, per-attempt factories, receive windows, datagram/CID/ACK limits, Initial ID/number | `client_handshake.go` | `interface.go`, `config.go`, `connection.go`, `transport.go` |
+| Explicit local initial RTT and initial PTO factor, measured-RTT metadata | client controls; `initial_rtt_test.go`, `internal/utils/initial_estimate_test.go` | one client initialization hook; optional fields in `RTTStats`; atomic measurement flag and `ConnectionStats.RTTMeasured` |
 | UDP receive size (including the omitted protocol default) | `packet_receive_size*.go` | `sys_conn*.go`, `transport.go`, one receive-only pool branch in `buffer_pool.go` |
 | ACK scheduling and active CID limits | `internal/ackhandler/receive_config.go`, client controls | one tracker field/alarm hook and the manager limit hook |
 | Optional client receive ACK policy | `ack_policy.go`, `internal/ackhandler/ack_policy.go` | one Application Data tracker branch and client setup; native and server defaults retained |
@@ -67,6 +68,15 @@ values, presets or new configuration options are involved.
 A separate upstream bug fix in `crypto_stream.go` sorts absent SNI cuts after
 real ECH cuts. ECH without SNI (IP origins) otherwise leaves HasData false and
 stalls the handshake. A byte-reassembly regression covers this case.
+
+`InitialRTT` seeds local RTT/pacing/recovery until a real ACK measurement;
+`InitialPTOMultiplier` optionally controls PTO before that first measurement.
+Zero fields retain native behavior, including token restoration. Real samples
+replace estimates, path migration forgets the old estimate, and clones retain
+the explicit policy. No transport parameter or browser value is added here.
+`ConnectionStats.RTTMeasured` distinguishes an observed RTT from an initial/token
+estimate, including measured paths whose RTT variance has reached zero. Its
+underlying flag is atomic so the public statistics API remains safe to read.
 
 Test-only adaptations: HTTP integration tests/examples use fork HTTP types and
 ordered maps. `hkdf_test.go` uses fixed Expand-Label vectors instead of private
