@@ -3,5 +3,13 @@
   "version": "v0.65.0",
   "commit": "aa265c3fc6489e3bfa8071b333be95e0e887a51d",
   "module": "github.com/enetx/quic-go",
-  "minimum_go": "1.27"
+  "minimum_go": "1.27",
+  "corrections": [
+    {
+      "source": "https://github.com/quic-go/quic-go/pull/6011",
+      "revision": "ec20e6e567f417325633c6aedc4810b216fc4230",
+      "status": "proposed upstream fix, unmerged at import",
+      "local_extension": "Synchronize parameter publication with public state and datagram snapshots."
+    }
+  ]
 }

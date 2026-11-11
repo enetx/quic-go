@@ -15,9 +15,8 @@ no second implementation here.
 
 The fork contains protocol controls, no browser names, presets or browser-valued
 defaults. All profiles, template construction, GREASE policy and extension values
-belong in Surf. No uTLS or QPACK fork was introduced, and QUIC does not depend on
-uTLS. `tlsquic` is a small interface using standard-library TLS event types.
-Surf implements the adapter using official `refraction-networking/utls`.
+belong in Surf. QUIC does not depend on uTLS. `tlsquic` is a small interface
+using standard-library TLS event types; Surf owns the TLS implementation adapter.
 
 `Config.ClientHandshake == nil` preserves upstream client behavior. Servers keep
 the upstream TLS path. Controls are per configuration/connection, never globals.
@@ -26,6 +25,25 @@ actual receive controllers; UDP limits provision real receive buffers; ACK delay
 sets the receive scheduler; CID and datagram limits configure their validators.
 Raw additional parameters may only describe extensions outside engine ownership.
 Advertising an extension does not implement it.
+
+## Concurrency corrections
+
+The 0-RTT outgoing-stream fix follows the proposed upstream
+[PR #6011](https://github.com/quic-go/quic-go/pull/6011), reviewed at
+`ec20e6e567f417325633c6aedc4810b216fc4230`. It was **not merged** at import.
+Keep this correction separate from the pinned release baseline and remove it
+when an official update includes the same behavior.
+
+Outgoing maps retain applied send windows and RESET_STREAM_AT capability under
+their existing locks. Creating a stream no longer reads the parameter pointer
+that the handshake can replace, or uses larger newly received limits before
+handshake completion. Existing MAX_STREAM_DATA increases remain effective.
+The corresponding upstream regression tests are included.
+
+A local stress regression also reproduced a pointer race in SendDatagram;
+ConnectionState accesses the same pointer. Publication and these reads use the existing
+connection-state mutex; nil parameters reject datagrams normally. No browser
+values, presets or new configuration options are involved.
 
 ## Small hooks
 

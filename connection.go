@@ -2470,7 +2470,9 @@ func (c *Conn) restoreTransportParameters(params *wire.TransportParameters) {
 		})
 	}
 
+	c.connStateMutex.Lock()
 	c.peerParams = params
+	c.connStateMutex.Unlock()
 	c.connIDGenerator.SetMaxActiveConnIDs(params.ActiveConnectionIDLimit)
 	c.connFlowController.UpdateSendWindow(params.InitialMaxData)
 	c.streamsMap.HandleTransportParameters(params)
@@ -2497,7 +2499,9 @@ func (c *Conn) handleTransportParameters(params *wire.TransportParameters) error
 		}
 	}
 
+	c.connStateMutex.Lock()
 	c.peerParams = params
+	c.connStateMutex.Unlock()
 	// On the client side we have to wait for handshake completion.
 	// During a 0-RTT connection, we are only allowed to use the new transport parameters for 1-RTT packets.
 	if c.perspective == protocol.PerspectiveServer {
@@ -3079,11 +3083,12 @@ func (c *Conn) OpenUniStreamSync(ctx context.Context) (*SendStream, error) {
 }
 
 func (c *Conn) newFlowController(id protocol.StreamID) *streamFlowController {
-	initialSendWindow := c.peerParams.InitialMaxStreamDataUni
-	if protocol.StreamTypeOf(id) == protocol.StreamTypeBidi {
-		if protocol.StreamInitiator(id) == c.perspective {
-			initialSendWindow = c.peerParams.InitialMaxStreamDataBidiRemote
-		} else {
+	// Outgoing streams get their effective send window from the stream map,
+	// under the same lock that serializes stream creation and parameter updates.
+	var initialSendWindow protocol.ByteCount
+	if protocol.StreamInitiator(id) != c.perspective {
+		initialSendWindow = c.peerParams.InitialMaxStreamDataUni
+		if protocol.StreamTypeOf(id) == protocol.StreamTypeBidi {
 			initialSendWindow = c.peerParams.InitialMaxStreamDataBidiLocal
 		}
 	}
@@ -3196,7 +3201,16 @@ func (c *Conn) recordStreamPriorityUpdated(id protocol.StreamID, urgency int8, i
 // In addition, a datagram may be dropped before being sent out if the available packet size suddenly decreases.
 // If the payload is too large to be sent at the current time, a [DatagramTooLargeError] is returned.
 func (c *Conn) SendDatagram(p []byte) error {
-	if !c.supportsDatagrams() {
+	// The handshake may replace the remembered 0-RTT parameter pointer while
+	// an application submits a datagram. Snapshot the immutable limit under
+	// the same lock used to publish parameters and read ConnectionState.
+	c.connStateMutex.Lock()
+	var maxDatagramFrameSize protocol.ByteCount
+	if c.peerParams != nil {
+		maxDatagramFrameSize = c.peerParams.MaxDatagramFrameSize
+	}
+	c.connStateMutex.Unlock()
+	if maxDatagramFrameSize <= 0 {
 		return errors.New("datagram support disabled")
 	}
 
@@ -3204,7 +3218,7 @@ func (c *Conn) SendDatagram(p []byte) error {
 	// The payload size estimate is conservative.
 	// Under many circumstances we could send a few more bytes.
 	maxDataLen := min(
-		f.MaxDataLen(c.peerParams.MaxDatagramFrameSize, c.version),
+		f.MaxDataLen(maxDatagramFrameSize, c.version),
 		protocol.ByteCount(c.maxPayloadSizeEstimate.Load()),
 	)
 	if protocol.ByteCount(len(p)) > maxDataLen {
