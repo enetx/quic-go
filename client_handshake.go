@@ -29,6 +29,9 @@ type ClientHandshake struct {
 	// InitialRTT supplies a local estimate until the first RTT measurement.
 	// Zero retains native initialization. It does not advertise a parameter.
 	InitialRTT time.Duration
+	// OnEarlyDataRejected observes a client's TLS 0-RTT rejection. It runs on
+	// the connection loop; callbacks must return promptly and not reenter it.
+	OnEarlyDataRejected func(*Conn)
 	// InitialPTOMultiplier scales the initial estimate before any measurement.
 	// Zero retains the native factor of two. Positive values are 1..16.
 	InitialPTOMultiplier uint32

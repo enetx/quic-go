@@ -377,15 +377,24 @@ with the old single sync.Once and passes with candidate-specific setup.
 
 Protocol competition, timers, browser policy and body ownership remain in Surf.
 
-`SessionVersion` reads the negotiated version from the existing client-side
-session-state metadata block. Its local format revision is 6 (version followed
-by the remembered transport parameters); revision 5 remains readable for
-ordinary resumption/0-RTT. The number and order of application Extra entries are
+`SessionVersion` and `ClientSessionMetadata` read the existing client-side
+session-state metadata block. Its local format revision is 7: negotiated version,
+measured RTT (zero without a sample), Initial key-context CID and remembered
+transport parameters. Revisions 5 and 6 remain readable for ordinary
+resumption/0-RTT; version-bearing revision 6 has no RTT or CID. Returned byte
+slices are snapshots. The number and order of application Extra entries are
 preserved. This metadata never changes the opaque server ticket or TLS wire
 format. Generic metadata, malformed/legacy states and authenticated compatible
 switches are tested. Choosing an initial version from a live ticket remains
 Surf policy, including origin isolation, allowed versions, cache eviction and
 expiry; the QUIC engine does not add an origin-history database.
+
+`ClientHandshake.OnEarlyDataRejected` observes the client's existing TLS
+0-RTT rejection event before its encryption level is discarded. The callback
+runs on the connection loop and must return promptly without reentering it.
+Surf uses it to update its remaining ticket queue; no browser cache policy or
+origin database enters this fork. Standard TLS and custom TLS-engine rejection
+paths are exercised by Surf's actual HTTP/3 handshake tests.
 
 ## Client congestion control
 

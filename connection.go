@@ -2152,6 +2152,11 @@ func (c *Conn) handleHandshakeEvents(now monotime.Time) error {
 			c.undecryptablePacketsToProcess = append(c.undecryptablePacketsToProcess, c.undecryptablePackets...)
 			c.undecryptablePackets = nil
 		case handshake.EventDiscard0RTTKeys:
+			if c.perspective == protocol.PerspectiveClient {
+				if h := c.config.ClientHandshake; h != nil && h.OnEarlyDataRejected != nil {
+					h.OnEarlyDataRejected(c)
+				}
+			}
 			c.dropEncryptionLevel(protocol.Encryption0RTT, now)
 		case handshake.EventWriteInitialData:
 			_, err = c.initialStream.Write(ev.Data)

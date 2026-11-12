@@ -24,7 +24,7 @@ type quicVersionContextKey struct{}
 
 var QUICVersionContextKey = &quicVersionContextKey{}
 
-const clientSessionStateRevision = 6
+const clientSessionStateRevision = 7
 
 type cryptoSetup struct {
 	tlsConf *tls.Config
@@ -352,6 +352,15 @@ func (h *cryptoSetup) marshalDataForSessionState(earlyData bool) []byte {
 	b := make([]byte, 0, 256)
 	b = quicvarint.Append(b, clientSessionStateRevision)
 	b = binary.BigEndian.AppendUint32(b, uint32(h.version))
+	var rtt uint64
+	if h.rttStats.HasMeasurement() {
+		if measured := h.rttStats.SmoothedRTT(); measured > 0 && uint64(measured) <= quicvarint.Max {
+			rtt = uint64(measured)
+		}
+	}
+	b = quicvarint.Append(b, rtt)
+	b = quicvarint.Append(b, uint64(h.initialConnID.Len()))
+	b = append(b, h.initialConnID.Bytes()...)
 	if earlyData {
 		// only save the transport parameters for 0-RTT enabled session tickets
 		return h.peerParams.MarshalForSessionTicket(b)
@@ -381,11 +390,27 @@ func decodeDataFromSessionState(b []byte, earlyData bool) (*wire.TransportParame
 		return nil, err
 	}
 	b = b[l:]
-	if ver == clientSessionStateRevision {
+	if ver == 6 || ver == clientSessionStateRevision {
 		if len(b) < 4 {
 			return nil, errors.New("truncated session QUIC version")
 		}
 		b = b[4:]
+		if ver == clientSessionStateRevision {
+			_, width, err := quicvarint.Parse(b)
+			if err != nil {
+				return nil, err
+			}
+			b = b[width:]
+			cidLen, width, err := quicvarint.Parse(b)
+			if err != nil {
+				return nil, err
+			}
+			b = b[width:]
+			if cidLen > protocol.MaxConnIDLen || cidLen > uint64(len(b)) {
+				return nil, errors.New("truncated session connection ID")
+			}
+			b = b[cidLen:]
+		}
 	} else if ver != 5 { // Read native cached states written before version metadata.
 		return nil, fmt.Errorf("mismatching version. Got %d, expected %d", ver, clientSessionStateRevision)
 	}
