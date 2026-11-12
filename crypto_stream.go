@@ -105,7 +105,10 @@ type clientHelloCut struct {
 
 type initialCryptoStream struct {
 	baseCryptoStream
-	protection *initialProtectionState
+	protection     *initialProtectionState
+	layout         func(InitialCryptoLayoutInfo) [][]CryptoRange
+	layoutPrepared bool
+	layoutState    *initialCryptoLayoutState
 
 	scramble bool
 	end      protocol.ByteCount
@@ -130,6 +133,9 @@ func newInitialCryptoStream(isClient bool) *initialCryptoStream {
 }
 
 func (s *initialCryptoStream) HasData() bool {
+	if s.layout != nil && !s.layoutPrepared {
+		return completeInitialClientHello(s.writeBuf)
+	}
 	if s.protection != nil {
 		return s.hasProtectedData()
 	}
@@ -143,6 +149,9 @@ func (s *initialCryptoStream) HasData() bool {
 
 func (s *initialCryptoStream) Write(p []byte) (int, error) {
 	s.writeBuf = append(s.writeBuf, p...)
+	if s.layout != nil && !s.layoutPrepared {
+		return len(p), nil
+	}
 	if !s.scramble {
 		return len(p), nil
 	}

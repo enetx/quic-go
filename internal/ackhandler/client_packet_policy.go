@@ -16,7 +16,21 @@ type PacketNumberLengthInfo struct {
 	LargestAcknowledged int64
 	LeastUnacknowledged uint64
 	MaxPacketsInFlight  uint64
-	NativeLength        uint8
+	// CoalescedMaxPacketsInFlight estimates the same window using the remaining
+	// unpadded datagram budget after the previous long-header packet in this
+	// number space. Zero means that no usable coalescing budget is available.
+	CoalescedMaxPacketsInFlight uint64
+	NativeLength                uint8
+}
+
+// SetCoalescedPacketSize records the remaining long-header datagram budget for
+// an optional client packet-number policy. It does not change congestion state,
+// the real path MTU, recovery, or the native packet-number length selection.
+func SetCoalescedPacketSize(handler SentPacketHandler, space protocol.PacketNumberSpace, size protocol.ByteCount) {
+	if h, ok := handler.(*sentPacketHandler); ok && h.perspective == protocol.PerspectiveClient {
+		h.coalescedPacketSpace = space
+		h.coalescedPacketSize = max(0, size)
+	}
 }
 
 // AckProbeInfo describes tracked application-data packets, including ACK-only
@@ -53,9 +67,19 @@ func (h *sentPacketHandler) packetNumberLength(pn, largestAcked protocol.PacketN
 	if h.maxDatagramSize > 0 {
 		inFlight = uint64(h.congestion.GetCongestionWindow() / h.maxDatagramSize)
 	}
+	var coalescedInFlight uint64
+	if h.coalescedPacketSpace != space {
+		// A change of encryption/number space discards the preceding packet's
+		// temporary limit, including when returning to an earlier space later.
+		h.coalescedPacketSize = 0
+	}
+	if h.coalescedPacketSize > 0 {
+		coalescedInFlight = uint64(h.congestion.GetCongestionWindow() / h.coalescedPacketSize)
+	}
 	length := h.packetNumberLengthPolicy(PacketNumberLengthInfo{
 		PacketNumber: uint64(pn), LargestAcknowledged: int64(largestAcked),
 		LeastUnacknowledged: uint64(least), MaxPacketsInFlight: inFlight, NativeLength: uint8(native),
+		CoalescedMaxPacketsInFlight: coalescedInFlight,
 	})
 	if length < 1 || length > 4 {
 		return native

@@ -73,3 +73,48 @@ func TestClientPacketPolicyRecoverySnapshots(t *testing.T) {
 	require.False(t, AckProbeNeeded(h, now, nil))
 	require.False(t, AckProbeNeeded(policyTestHandler(protocol.PerspectiveServer), now, func(AckProbeInfo) bool { t.Fatal("server policy"); return true }))
 }
+
+func TestClientPacketNumberCoalescedSizeSnapshot(t *testing.T) {
+	h := policyTestHandler(protocol.PerspectiveClient)
+	var snapshot PacketNumberLengthInfo
+	SetPacketNumberLengthPolicy(h, func(info PacketNumberLengthInfo) uint8 {
+		snapshot = info
+		if info.CoalescedMaxPacketsInFlight > info.MaxPacketsInFlight {
+			return 3
+		}
+		return 1
+	})
+	_, initialLength := h.PeekPacketNumber(protocol.PacketNumberSpaceInitial)
+	require.Equal(t, protocol.PacketNumberLen1, initialLength)
+	require.Zero(t, snapshot.CoalescedMaxPacketsInFlight)
+	SetCoalescedPacketSize(h, protocol.PacketNumberSpaceInitial, 262)
+	_, limitedLength := h.PeekPacketNumber(protocol.PacketNumberSpaceInitial)
+	require.Equal(t, protocol.PacketNumberLen3, limitedLength, "the application policy receives the live temporary estimate")
+	require.EqualValues(t, h.congestion.GetCongestionWindow()/262, snapshot.CoalescedMaxPacketsInFlight)
+	require.EqualValues(t, h.congestion.GetCongestionWindow()/1200, snapshot.MaxPacketsInFlight)
+	require.EqualValues(t, 1200, h.maxDatagramSize, "temporary budget must not change path MTU or congestion")
+	_, handshakeLength := h.PeekPacketNumber(protocol.PacketNumberSpaceHandshake)
+	require.Equal(t, protocol.PacketNumberLen1, handshakeLength)
+	require.Zero(t, snapshot.CoalescedMaxPacketsInFlight, "another number space discards the temporary limit")
+	h.PeekPacketNumber(protocol.PacketNumberSpaceInitial)
+	require.Zero(t, snapshot.CoalescedMaxPacketsInFlight, "returning to the previous space does not resurrect its limit")
+	for _, size := range []protocol.ByteCount{0, -1} {
+		SetCoalescedPacketSize(h, protocol.PacketNumberSpaceInitial, size)
+		h.PeekPacketNumber(protocol.PacketNumberSpaceInitial)
+		require.Zero(t, snapshot.CoalescedMaxPacketsInFlight)
+	}
+	SetCoalescedPacketSize(h, protocol.PacketNumberSpaceInitial, 262)
+	h.SetMaxDatagramSize(1400)
+	h.PeekPacketNumber(protocol.PacketNumberSpaceInitial)
+	require.Zero(t, snapshot.CoalescedMaxPacketsInFlight, "a changed path MTU discards its old temporary budget")
+	require.EqualValues(t, h.congestion.GetCongestionWindow()/1400, snapshot.MaxPacketsInFlight)
+	SetCoalescedPacketSize(h, protocol.PacketNumberSpaceInitial, 262)
+	h.ResetForRetry(monotime.Now())
+	h.PeekPacketNumber(protocol.PacketNumberSpaceInitial)
+	require.Zero(t, snapshot.CoalescedMaxPacketsInFlight, "Retry starts a new packet-size context")
+	server := policyTestHandler(protocol.PerspectiveServer)
+	SetCoalescedPacketSize(server, protocol.PacketNumberSpaceInitial, 262)
+	require.Zero(t, server.coalescedPacketSize)
+	_, nativeLength := server.PeekPacketNumber(protocol.PacketNumberSpaceInitial)
+	require.Equal(t, protocol.PacketNumberLen2, nativeLength)
+}

@@ -61,9 +61,10 @@ values, presets or new configuration options are involved.
 | Initial SETTINGS before request writes / optional first-flight staging | `http3/client_settings.go`, `http3/client_initial_settings.go` | readiness channel, nonblocking control preparation and per-dial application-ready callback |
 | HTTP/3 ordering and priority | `http3/` custom files and existing small hooks | see `http3/UPSTREAM.md` |
 | First HTTP/3 body read and cancellation of blocked uploads | `http3/request_body_reads.go` | optional wire callback, validated header collection and body-copy hooks |
-| Encoded packet-number length and recovery-driven ACK-only probes | `packet_policy.go`, `internal/ackhandler/client_packet_policy.go` | send-handler length/MTU hooks and one client packer branch; callbacks stay outside the engine |
+| Encoded packet-number length, temporary coalescing-budget snapshots and recovery-driven ACK-only probes | `packet_policy.go`, `internal/ackhandler/client_packet_policy.go` | send-handler length/MTU/Retry hooks, coalesced/PTO packing and short-header reset; policy stays outside the engine |
 | Optional Initial datagram padding, separated handshake ACK flight and NEW_CONNECTION_ID order | `initial_datagram_padding.go`, `connection_id_frame_order.go` | client packer options, Initial padding accounting and a control-queue ordering branch |
 | Optional client Initial protection, address-based packet size, ACK-only PING and receive-credit batching | `initial_packet_protection.go`, `client_handshake.go` | packet serialization/handshake hooks, per-client flow-controller divisor; no browser defaults |
+| Optional ordered Initial CRYPTO ranges with live packet budgets | `initial_crypto_layout.go` | client configuration, Initial stream buffering, existing protection queues and one pre-serialization preparation step; native recovery retained |
 
 A separate upstream bug fix in `crypto_stream.go` sorts absent SNI cuts after
 real ECH cuts. ECH without SNI (IP origins) otherwise leaves HasData false and
@@ -222,6 +223,46 @@ connection; browser values and policies remain in Surf. Property tests cover
 partial ClientHello writes, packet budgets, large messages, recovery and later
 TLS messages.
 
+`ClientHandshake.InitialCryptoLayout` optionally chooses ordered ranges for new
+data from the first complete ClientHello. Its callback receives the message's
+length and SNI/ECH positions, a private ascending `Remaining` range snapshot,
+the current plaintext `PacketSizeLimit` (including the QUIC header, excluding
+AEAD expansion), and `FrameBudget` after the header and any ACK. Range offsets
+exclude CRYPTO frame headers. Missing SNI/ECH positions are `-1` with zero length.
+
+All returned groups must cover exactly `Remaining`, with positive lengths and
+no duplicate, omitted, out-of-bounds or previously consumed bytes. Invalid output
+fails before serialization. The engine copies ranges and selects only the first
+group for this packet; the other groups establish coverage, not a fixed plan for
+later packets. Actual popped CRYPTO bytes, including budget-forced splits, are
+removed from the next snapshot. Each later packet carrying new ClientHello data
+gets fresh header/ACK budgets. Callbacks run in the send loop and must not block
+or reenter the connection.
+
+Nil output on the first call retains native preparation, including the existing
+scrambling/protection configuration. After a custom group, nil output selects
+the remaining ranges sequentially. Explicit custom groups retain their order
+through the ordinary writer instead of its native frame shuffle. Separately
+enabled `InitialPacketProtection` can still split and shuffle those frames as
+requested. Application policy chooses the layout; the fork contains no browser
+hostname-slicing rule, balancing constant or preset.
+
+This hook builds on the pinned upstream
+[`crypto_stream.go`](https://github.com/quic-go/quic-go/blob/v0.65.0/crypto_stream.go)
+and [`packet_packer.go`](https://github.com/quic-go/quic-go/blob/v0.65.0/packet_packer.go)
+paths; it is a fork extension, not functionality supplied by that release.
+It waits for a complete first ClientHello. Partial-message emission, later TLS
+messages (including a second ClientHello), and retransmitted CRYPTO retain native
+handling. Recovery preserves bytes and offsets, but does not rerun the layout
+callback over previously consumed/lost ranges. In particular, loss of an entire
+flight is not evidence that its retransmission layout matches an application
+that slices the restored byte ranges again.
+
+`initial_crypto_layout_test.go` and `initial_crypto_layout_dynamic_test.go` cover
+native nil fallback, SNI/ECH and fragmented TLS writes, exact coverage validation,
+caller ownership, actual serialized frame order, changing live budgets, forced
+splits, remaining-range updates, subsequent TLS data and client/server isolation.
+
 `ReceiveWindowUpdateDivisor` applies to real stream/connection controllers.
 `AckOnlyPingThreshold` can retain, replace or disable periodic PING insertion.
 `AckOnlyMaxDataThreshold` queues a repeat of current connection credit to solicit
@@ -234,6 +275,21 @@ Optional `PacketNumberLengthPolicy` receives a recovery snapshot and selects enc
 bytes. Invalid lengths fall back to native; too-short lengths are increased to
 retain a safe decoding range. Server policies are never installed. The handler
 tracks the current datagram size for congestion-window estimates.
+`PacketNumberLengthInfo.CoalescedMaxPacketsInFlight` additionally estimates that
+window using the remaining unpadded long-header datagram budget from the previous
+packet in the same number space. It is zero without a usable temporary budget;
+the existing `MaxPacketsInFlight` remains based on the path's real datagram size.
+Normal coalesced packets and long-header PTO probes update this private snapshot.
+Remainders too small for another protected header are ignored. A number-space
+change, short-header construction, Retry or an MTU update discards the temporary
+limit; it cannot reappear when returning to an earlier space. This does not
+change the path MTU, congestion state, padding, packet numbers or RFC 9000 safety
+checks. The application decides whether the extra estimate affects its selected
+width. No policy leaves native selection unchanged, and older policies can
+ignore the new field. `coalesced_packet_policy_test.go` decodes actual packet
+widths and covers unusable remainders, 1-RTT isolation and PTO updates; the
+ackhandler tests cover snapshot values, number-space/Retry/MTU reset and servers.
+
 `AckProbePolicy` receives tracked application-data packet count (including
 ACK-only sends), last eliciting send age and unbacked-off PTO. It only adds a
 PING to an ACK-bearing packet when congestion and packet space permit it; native

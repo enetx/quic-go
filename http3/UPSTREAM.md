@@ -46,6 +46,29 @@ Preserve these behaviors when updating:
 The former pooled sorter has been removed. The shared stateless sorter preserves
 its observable order without cached mutable state or a global lock.
 
+## Computed request Content-Length
+
+[request_writer.go](request_writer.go) places a computed Content-Length in an
+explicit `Header-Order:` slot instead of appending it after ordinary fields.
+It uses the sanitized body length, removes supplied length aliases from a private
+ordered snapshot and emits the field once. Supplied numeric values never override
+framing. Without an explicit slot, implicit fields retain upstream insertion order.
+
+A nil or empty Content-Length value slice suppresses automatic CL:0 only for an
+actual zero-length body. Matching is case-insensitive. Positive and unknown
+lengths ignore this opt-out and retain normal framing; an empty string value is
+not an empty slice. A known zero-length upload with non-nil `Request.GetBody`
+can select CL:0 through an explicit length slot, including on methods that normally
+omit it. The nil/empty opt-out still takes precedence. Header preparation neither
+reads the body nor calls GetBody. Requests without these explicit controls retain
+upstream method and framing defaults.
+
+The change is limited to request-header preparation and private length helpers;
+it needs no additional public API from the HTTP module. It applies to both static
+and connection QPACK encoding, preserves header validation and leaves caller data
+unchanged. Compare it with the [pinned upstream request writer](https://github.com/quic-go/quic-go/blob/v0.65.0/http3/request_writer.go)
+when updating. Browser constants and profile policy remain in Surf.
+
 ## Surf API usage
 
 Optional `WireConfig` supplies reserved control/request frame factories and
@@ -88,6 +111,12 @@ The fork follows the current `NewCapsuleParser` / `CapsuleReader` API,
 - `request_writer_order_test.go` and `fork_wire_test.go`: default and custom
   regular/pseudo-header order, CONNECT, Extended CONNECT, QPACK bytes with and
   without qlog, repeated requests, multiple values and omitted metadata.
+- [request_writer_content_length_test.go](request_writer_content_length_test.go)
+  and [request_writer_empty_body_test.go](request_writer_empty_body_test.go):
+  independently decoded QPACK bytes for ordered computed lengths, nil/empty
+  zero-length suppression, explicit empty uploads, positive/unknown lengths,
+  stale values and case aliases. Both encoder paths, implicit-field order,
+  request immutability, body isolation and unchanged validation are covered.
 - The HTTP module's `tests/headerorder/`: shared ordering, partial orders,
   lexicographic fallback, excluded metadata and independent calls.
 - `frames_settings_test.go` and `fork_wire_test.go`: ordered settings on real

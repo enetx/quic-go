@@ -40,12 +40,16 @@ func (p *InitialPacketProtection) validate() error {
 type initialProtectionState struct {
 	policy   InitialPacketProtection
 	prepared bool
+	ordered  bool
 	active   []*wire.CryptoFrame
 	pending  [][]*wire.CryptoFrame
 }
 
 func (s *initialCryptoStream) hasProtectedData() bool {
 	p := s.protection
+	if s.layoutState != nil && len(s.layoutState.remaining) > 0 {
+		return true
+	}
 	if len(p.active) > 0 || len(p.pending) > 0 {
 		return true
 	}
@@ -94,6 +98,9 @@ func (s *initialCryptoStream) beginProtectedPacket(budget protocol.ByteCount, rn
 func (s *initialCryptoStream) popProtectedFrame(budget protocol.ByteCount) *wire.CryptoFrame {
 	p := s.protection
 	if len(p.active) == 0 {
+		if s.layoutState != nil {
+			return nil // re-evaluate the next packet with its own live budget
+		}
 		if len(p.pending) > 0 {
 			return nil // preserve the first packet's padding budget
 		}
@@ -101,9 +108,13 @@ func (s *initialCryptoStream) popProtectedFrame(budget protocol.ByteCount) *wire
 	}
 	f := p.active[0]
 	if split, needed := f.MaybeSplitOffFrame(budget, protocol.Version1); needed {
+		if split != nil {
+			s.consumeCryptoLayoutRange(split)
+		}
 		return split
 	}
 	p.active = p.active[1:]
+	s.consumeCryptoLayoutRange(f)
 	return f
 }
 

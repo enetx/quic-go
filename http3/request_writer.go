@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"strconv"
 	"strings"
@@ -203,6 +204,31 @@ func (w *requestWriter) encodeHeaders(req *http.Request, addGzipHeader bool, tra
 		}
 	}
 
+	order := httpcommon.Indices(req.Header[httpcommon.HeaderOrderKey])
+	_, orderedContentLength := order["content-length"]
+	sendContentLength := shouldSendReqContentLength(req.Method, contentLength)
+	if contentLength == 0 && req.GetBody != nil && orderedContentLength {
+		// An explicit slot can frame a replayable zero-byte upload without
+		// changing the upstream defaults for requests without ordered metadata.
+		sendContentLength = true
+	}
+	sendContentLength = sendContentLength && !omitZeroContentLength(req.Header, contentLength)
+	orderedContentLength = orderedContentLength && sendContentLength
+	headers := req.Header
+	if orderedContentLength {
+		// Only an explicit slot changes the upstream implicit-field order.
+		// Framing uses the actual body length, never a supplied header value.
+		headers = maps.Clone(req.Header)
+		for name := range headers {
+			if strings.EqualFold(name, "content-length") {
+				delete(headers, name)
+			}
+		}
+		headers["content-length"] = []string{strconv.FormatInt(contentLength, 10)}
+	}
+	// Share the same deterministic order as HTTP/1 and HTTP/2.
+	kvs := httpcommon.Sorted(headers, order, nil)
+
 	enumerateHeaders := func(f func(name, value string)) {
 		// Handle pseudo-headers with order support
 		pHeaderOrder, hasPHeaderOrder := req.Header[httpcommon.PHeaderOrderKey]
@@ -248,17 +274,14 @@ func (w *requestWriter) encodeHeaders(req *http.Request, addGzipHeader bool, tra
 			f("trailer", trailers)
 		}
 
-		// Share the same deterministic order as HTTP/1 and HTTP/2.
-		kvs := httpcommon.Sorted(req.Header, httpcommon.Indices(req.Header[httpcommon.HeaderOrderKey]), nil)
-
 		var didUA bool
 		for _, kv := range kvs {
 			k := kv.Key
 			vv := kv.Values
 
-			if strings.EqualFold(k, "host") || strings.EqualFold(k, "content-length") {
+			if strings.EqualFold(k, "host") || (strings.EqualFold(k, "content-length") && !orderedContentLength) {
 				// Host is :authority, already sent.
-				// Content-Length is automatic, set below.
+				// Unordered Content-Length is automatic, set below.
 				continue
 			} else if strings.EqualFold(k, "connection") || strings.EqualFold(k, "proxy-connection") ||
 				strings.EqualFold(k, "transfer-encoding") || strings.EqualFold(k, "upgrade") ||
@@ -297,7 +320,7 @@ func (w *requestWriter) encodeHeaders(req *http.Request, addGzipHeader bool, tra
 			}
 		}
 
-		if shouldSendReqContentLength(req.Method, contentLength) {
+		if sendContentLength && !orderedContentLength {
 			f("content-length", strconv.FormatInt(contentLength, 10))
 		}
 		if addGzipHeader {
@@ -395,6 +418,20 @@ func actualContentLength(req *http.Request) int64 {
 		return req.ContentLength
 	}
 	return -1
+}
+
+// An explicitly empty field opts out only when the sanitized body length is zero.
+// It never changes framing for a nonempty or unknown-length body.
+func omitZeroContentLength(headers http.Header, contentLength int64) bool {
+	if contentLength != 0 {
+		return false
+	}
+	for name, values := range headers {
+		if strings.EqualFold(name, "content-length") && len(values) == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // shouldSendReqContentLength reports whether the http2.Transport should send

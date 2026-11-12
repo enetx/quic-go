@@ -136,6 +136,11 @@ type ClientHandshake struct {
 
 	// DisableClientHelloScrambling disables upstream SNI/ECH CRYPTO fragmentation.
 	DisableClientHelloScrambling bool
+	// InitialCryptoLayout optionally chooses ordered CRYPTO ranges and packet
+	// boundaries for the first complete ClientHello. Nil results retain native
+	// preparation. The callback runs in the send loop and must not block or
+	// reenter the connection. See InitialCryptoLayoutInfo for validation rules.
+	InitialCryptoLayout func(InitialCryptoLayoutInfo) [][]CryptoRange
 
 	StreamReceiveWindows *StreamReceiveWindows
 	TransportParameters  *transportparams.Layout
@@ -416,6 +421,9 @@ func (c *Conn) configureInitialCryptoStream() {
 		c.initialStream.scramble = false
 		c.initialStream.protection = &initialProtectionState{policy: *h.InitialPacketProtection}
 	}
+	if h := c.config.ClientHandshake; c.perspective == protocol.PerspectiveClient && h != nil {
+		c.initialStream.layout = h.InitialCryptoLayout
+	}
 }
 
 func (c *Conn) configureClientPacketPacker() {
@@ -424,6 +432,11 @@ func (c *Conn) configureClientPacketPacker() {
 		c.framer.sortConnectionIDFrames = h.SortConnectionIDFrames
 		ackhandler.SetPacketNumberLengthPolicy(c.sentPacketHandler, h.PacketNumberLengthPolicy)
 		p := c.packer.(*packetPacker)
+		if h.PacketNumberLengthPolicy != nil {
+			p.coalescedPacketSize = func(space protocol.PacketNumberSpace, size protocol.ByteCount) {
+				ackhandler.SetCoalescedPacketSize(c.sentPacketHandler, space, size)
+			}
+		}
 		if h.AckProbePolicy != nil {
 			p.shouldProbeAckOnly = func(now monotime.Time) bool {
 				return ackhandler.AckProbeNeeded(c.sentPacketHandler, now, h.AckProbePolicy)

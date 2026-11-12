@@ -77,6 +77,8 @@ type sentPacketHandler struct {
 	// Packet numbers and their history are shared across encryption levels.
 	// ACK processing and loss detection still use the state for each space.
 	packetNumberLengthPolicy    func(PacketNumberLengthInfo) uint8
+	coalescedPacketSize         protocol.ByteCount
+	coalescedPacketSpace        protocol.PacketNumberSpace
 	maxDatagramSize             protocol.ByteCount
 	pns                         *packetNumberGenerator
 	separateSpaces              *separatePacketNumberSpaces
@@ -1218,6 +1220,7 @@ func (h *sentPacketHandler) SetPeerMaxAckDelay(delay time.Duration, now monotime
 }
 
 func (h *sentPacketHandler) SetMaxDatagramSize(s protocol.ByteCount) {
+	h.coalescedPacketSize = 0
 	h.maxDatagramSize = s
 	h.congestion.SetMaxDatagramSize(s)
 }
@@ -1263,6 +1266,7 @@ func (h *sentPacketHandler) queueFramesForRetransmission(p *packet) {
 }
 
 func (h *sentPacketHandler) ResetForRetry(now monotime.Time) {
+	h.coalescedPacketSize = 0
 	h.bytesInFlight = 0
 	var firstPacketSendTime monotime.Time
 	// Only Initial and 0-RTT packets can have been sent before a Retry.
