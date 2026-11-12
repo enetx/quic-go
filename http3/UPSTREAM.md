@@ -180,3 +180,13 @@ The engine contains no browser random distribution or profile defaults.
 Private validation and real HTTP/3 tests cover bounds, duplicates, errors, input
 immutability, request reuse and fresh connections. Surf supplies Chromium's two
 independent uint32 draws through its fluent `GreaseFactory` profile control.
+
+## Response header observation
+
+`WireConfig.OnResponseHeaders` observes parsed informational and final headers
+before tracing or application delivery. Returning an error cancels the request.
+The nil default preserves upstream behavior. Browser retry/backup policy belongs
+in Surf, not this generic hook. The patch is limited to `wire_config.go` and the
+response loop in `client.go`; `response_headers_test.go` exercises real QUIC
+streams, ordering and cancellation. The adjacent trace call now propagates
+`Got1xxResponse` errors as required by the existing httptrace contract.

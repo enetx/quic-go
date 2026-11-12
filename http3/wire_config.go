@@ -48,6 +48,12 @@ type RequestBodyReadInfo struct {
 // Factories may run concurrently on different connections and must not mutate
 // requests or reenter the transport. Returned payloads are copied before use.
 type WireConfig struct {
+	// OnResponseHeaders runs after each valid response header block, including
+	// informational responses, before tracing or delivery to the application.
+	// An error aborts the request. The callback must return promptly, must not
+	// mutate the request or response or read its body, and must be safe for
+	// concurrent requests. Nil leaves response handling unchanged.
+	OnResponseHeaders func(*http.Request, *http.Response) error
 	// CoalesceInitialSettings stages control-stream data before the first
 	// post-handshake flight when peer credit allows. Backpressure falls back
 	// to asynchronous writes on the same stream. Factories must not block.

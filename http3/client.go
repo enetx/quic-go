@@ -521,6 +521,13 @@ func (c *ClientConn) doRequest(req *http.Request, str *RequestStream) (*http.Res
 		if err != nil {
 			return nil, err
 		}
+		if c.wireConfig != nil && c.wireConfig.OnResponseHeaders != nil {
+			if err := c.wireConfig.OnResponseHeaders(req, res); err != nil {
+				str.CancelRead(quic.StreamErrorCode(ErrCodeRequestCanceled))
+				str.CancelWrite(quic.StreamErrorCode(ErrCodeRequestCanceled))
+				return nil, err
+			}
+		}
 		resCode := res.StatusCode
 		is1xx := 100 <= resCode && resCode <= 199
 		// treat 101 as a terminal status, see https://github.com/golang/go/issues/26161
@@ -532,7 +539,11 @@ func (c *ClientConn) doRequest(req *http.Request, str *RequestStream) (*http.Res
 				str.CancelWrite(quic.StreamErrorCode(ErrCodeExcessiveLoad))
 				return nil, errors.New("http3: too many 1xx informational responses")
 			}
-			traceGot1xxResponse(trace, resCode, textproto.MIMEHeader(res.Header))
+			if err := traceGot1xxResponse(trace, resCode, textproto.MIMEHeader(res.Header)); err != nil {
+				str.CancelRead(quic.StreamErrorCode(ErrCodeRequestCanceled))
+				str.CancelWrite(quic.StreamErrorCode(ErrCodeRequestCanceled))
+				return nil, err
+			}
 			if resCode == http.StatusContinue {
 				traceGot100Continue(trace)
 			}

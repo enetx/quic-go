@@ -46,10 +46,11 @@ func traceGotFirstResponseByte(trace *httptrace.ClientTrace) {
 	}
 }
 
-func traceGot1xxResponse(trace *httptrace.ClientTrace, code int, header textproto.MIMEHeader) {
+func traceGot1xxResponse(trace *httptrace.ClientTrace, code int, header textproto.MIMEHeader) error {
 	if trace != nil && trace.Got1xxResponse != nil {
-		trace.Got1xxResponse(code, header)
+		return trace.Got1xxResponse(code, header)
 	}
+	return nil
 }
 
 func traceGot100Continue(trace *httptrace.ClientTrace) {
