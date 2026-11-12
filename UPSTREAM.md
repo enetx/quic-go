@@ -566,3 +566,14 @@ flow-control blockage, partial batches and close/error cases are covered.
 `QPACKConfig.EncoderCapacityRequiresSetting` distinguishes an omitted peer table
 setting from an explicit zero while preserving the independent
 EncoderZeroCapacity switch. Browser choices remain exclusively in Surf.
+
+## 32-bit build coverage
+
+Keep QUIC's 62-bit bounds explicitly typed as `uint64` at variadic formatting
+and assertion boundaries. An untyped constant passed through `any` defaults to
+`int`, which overflows on 32-bit targets. The datagram-limit diagnostic retains
+its exact value and validation behavior with this conversion.
+
+CI builds every package and compiles all tests for Linux 386, ARMv6 and ARMv7
+with CGO disabled. These cross-compilation checks skip execution; native race
+tests continue to run separately on Linux, macOS and Windows.

@@ -287,7 +287,7 @@ func (c *Config) validateClientHandshake() error {
 		return nil
 	}
 	if h.MaxDatagramFrameSize > 0 && (!c.EnableDatagrams || h.MaxDatagramFrameSize > quicvarint.Max) {
-		return fmt.Errorf("custom datagram limit requires enabled datagrams and must not exceed %d", quicvarint.Max)
+		return fmt.Errorf("custom datagram limit requires enabled datagrams and must not exceed %d", uint64(quicvarint.Max))
 	}
 	if w := h.StreamReceiveWindows; w != nil {
 		limit := c.MaxStreamReceiveWindow

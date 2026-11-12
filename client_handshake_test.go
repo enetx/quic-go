@@ -7,6 +7,7 @@ import (
 
 	"github.com/enetx/quic-go/internal/protocol"
 	"github.com/enetx/quic-go/internal/wire"
+	"github.com/enetx/quic-go/quicvarint"
 	"github.com/enetx/quic-go/transportparams"
 	"github.com/stretchr/testify/require"
 )
@@ -69,6 +70,16 @@ func TestClientHandshakeValidation(t *testing.T) {
 		require.Equal(t, size, a.Len())
 		require.NotEqual(t, a, b)
 	}
+}
+
+func TestClientHandshakeDatagramLimitValidation(t *testing.T) {
+	for _, config := range []*Config{
+		{ClientHandshake: &ClientHandshake{MaxDatagramFrameSize: 1}},
+		{EnableDatagrams: true, ClientHandshake: &ClientHandshake{MaxDatagramFrameSize: quicvarint.Max + 1}},
+	} {
+		require.EqualError(t, validateConfig(config), "custom datagram limit requires enabled datagrams and must not exceed 4611686018427387903")
+	}
+	require.NoError(t, validateConfig(&Config{EnableDatagrams: true, ClientHandshake: &ClientHandshake{MaxDatagramFrameSize: quicvarint.Max}}))
 }
 
 func TestInitialPacketNumberFactory(t *testing.T) {

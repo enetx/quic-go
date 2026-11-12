@@ -20,7 +20,7 @@ func TestConnectionSettingsGreaseValidatesBeforeMutation(t *testing.T) {
 	snapshot, err := connectionSettingsGrease(settings, func() (uint64, uint64, error) { return 64, quicvarint.Max, nil })
 	require.NoError(t, err)
 	require.False(t, settings.Contains(64))
-	require.EqualValues(t, quicvarint.Max, snapshot.Get(64).Unwrap())
+	require.EqualValues(t, uint64(quicvarint.Max), snapshot.Get(64).Unwrap())
 	snapshot.Insert(1, 0)
 	require.EqualValues(t, 65536, settings.Get(1).Unwrap())
 	_, err = connectionSettingsGrease(snapshot, func() (uint64, uint64, error) { return 64, 2, nil })
