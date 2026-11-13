@@ -187,14 +187,13 @@ func TestQPACKRequestBatchPriorityPartialAcceptance(t *testing.T) {
 			}
 			request, err := c.conn.OpenStream()
 			require.NoError(t, err)
-			wr, finish := c.prepareQPACKRequestHeaders(request)
+			wr, finish := c.prepareQPACKRequestHeaders(&requestHeaderWriter{Writer: request, fin: true})
 			defer finish()
 			require.NoError(t, encoder.enqueue(instructions))
 			req, _ := http.NewRequest("GET", "https://localhost/", nil)
 			req.Header.Set("Priority", "u=0, i")
 			priority := c.priorityUpdateFrame(request.StreamID(), 0, true)
 			require.NoError(t, c.writeRequestHeaders(wr, req, request.StreamID(), []byte{1, 0}))
-			require.NoError(t, request.Close())
 			go encoder.run()
 			go c.controlWriter.run(control)
 

@@ -56,7 +56,7 @@ func (c *ClientConn) writeRequestHeaders(wr io.Writer, req *http.Request, id qui
 		if done || !errors.Is(err, quic.ErrWouldBlock) {
 			return err
 		}
-		return writeRequestHeaderFallback(wr, data)
+		return c.writeRequestOnly(wr, request)
 	}
 	if len(priority) == 0 {
 		n, err := c.conn.TryWriteStreamBatch([]quic.StreamWrite{request})
@@ -73,10 +73,22 @@ func (c *ClientConn) writeRequestHeaders(wr io.Writer, req *http.Request, id qui
 				return &RequestPreparationError{err}
 			}
 		}
+		return c.writeRequestOnly(wr, request)
 	}
 	// Backpressure retains the native blocking request write; no body is read
 	// or replayed. The bounded asynchronous writer owns the remaining update.
 	return writeRequestHeaderFallback(wr, data)
+}
+
+// An earlier critical-stream element can block a batch before the request is
+// attempted. Queue the request independently, retaining its FIN when its own
+// credit permits; only real request backpressure needs the blocking fallback.
+func (c *ClientConn) writeRequestOnly(wr io.Writer, request quic.StreamWrite) error {
+	n, err := c.conn.TryWriteStreamBatch([]quic.StreamWrite{request})
+	if n == 1 || !errors.Is(err, quic.ErrWouldBlock) {
+		return err
+	}
+	return writeRequestHeaderFallback(wr, request.Data)
 }
 
 func writeRequestHeaderFallback(wr io.Writer, data []byte) error {

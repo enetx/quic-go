@@ -248,6 +248,10 @@ Accepted prefixes are never replayed. Encoder ownership is released before a
 request's blocking fallback write, including cancellation and validation errors.
 Priority updates retain the same accepted-prefix accounting. Nil/default wire
 configuration retains the upstream request path; QPACK itself remains opt-in.
+When a control/encoder element blocks before the request is attempted, the
+request is retried independently with its own credit and FIN. Critical-stream
+backpressure therefore cannot force an otherwise sendable bodyless request
+through a separate blocking write/close sequence.
 
 `qpack_batch_test.go` covers real packet grouping, FIN, busy writers, validation,
 encoder/request/control backpressure, batch-size limits, partial acceptance,
