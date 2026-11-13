@@ -35,8 +35,15 @@ func nativeClient(client clientConn) *ClientConn {
 	}
 }
 
-func hasActiveClientStreams(client clientConn) bool {
-	c := nativeClient(client)
+func hasActiveClientStreams(cl *roundTripperWithCount) bool {
+	// Dial publishes clientConn by closing dialing; idle closure can run while
+	// the last waiting request has already cancelled but that dial is pending.
+	select {
+	case <-cl.dialing:
+	default:
+		return false
+	}
+	c := nativeClient(cl.clientConn)
 	return c != nil && c.rawConn.hasActiveStreams()
 }
 

@@ -192,3 +192,47 @@ func TestPoolPartitionAppliesToExactLookupCoalescingAndPreconnect(t *testing.T) 
 		})
 	}
 }
+
+func TestCloseIdleConnectionsJoinsPendingDialAfterRequestCancellation(t *testing.T) {
+	tr, port, _ := reuseTestTransport(t)
+	dial := tr.Dial
+	connected, release := make(chan struct{}), make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	tr.Dial = func(ctx context.Context, addr string, tlsConfig *tls.Config, q *quic.Config) (*quic.Conn, error) {
+		conn, err := dial(ctx, addr, tlsConfig, q)
+		close(connected)
+		<-release
+		return conn, err
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, "GET", "https://localhost:"+port, nil)
+	require.NoError(t, err)
+	result := make(chan error, 1)
+	go func() {
+		_, err := tr.RoundTrip(request)
+		result <- err
+	}()
+	select {
+	case <-connected:
+	case <-time.After(5 * time.Second):
+		t.Fatal("dial did not establish a connection")
+	}
+	cancel()
+	require.ErrorIs(t, <-result, context.Canceled)
+	closed := make(chan struct{})
+	go func() { tr.CloseIdleConnections(); close(closed) }()
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("idle closure did not join the abandoned dial")
+	}
+	require.Empty(t, tr.clients)
+}

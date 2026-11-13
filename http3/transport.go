@@ -674,7 +674,7 @@ func (t *Transport) CloseIdleConnections() {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 	for hostname, cl := range t.clients {
-		if cl.useCount.Load() == 0 && !hasActiveClientStreams(cl.clientConn) {
+		if cl.useCount.Load() == 0 && !hasActiveClientStreams(cl) {
 			cl.Close()
 			delete(t.clients, hostname)
 		}
