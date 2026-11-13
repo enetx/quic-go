@@ -12,8 +12,9 @@ import (
 // Protected by framer.mutex. Completion removes entries; an idle open stream
 // keeps its place without retaining payload or a history of closed streams.
 type streamCreationOrder struct {
-	entries map[protocol.StreamID]*list.Element
-	ids     list.List
+	entries            map[protocol.StreamID]*list.Element
+	ids                list.List
+	prioritizeFinished bool
 }
 
 func (f *framer) enableStreamCreationOrder() {
@@ -59,32 +60,10 @@ func (f *framer) appendStreamFramesByCreation(frames []ackhandler.Frame, streams
 		length += n
 		maxLen -= n
 	}
-	// A lost byte range remains ahead of new data, including when it is split
-	// across packets. Within each class, retain creation order and skip blockers.
-	for entry := f.creationOrder.ids.Front(); entry != nil && maxLen >= minimum; entry = entry.Next() {
-		id := entry.Value.(protocol.StreamID)
-		str := f.retransmissionStreams[id]
-		if str == nil {
-			continue
-		}
-		for maxLen >= minimum {
-			frame, more := str.popRetransmissionFrame(maxLen+protocol.ByteCount(quicvarint.Len(uint64(maxLen))), v)
-			if !more {
-				delete(f.retransmissionStreams, id)
-			}
-			if frame.Frame != nil {
-				appendStream(frame)
-			}
-			if !more || frame.Frame == nil {
-				break
-			}
-		}
-	}
-	for entry := f.creationOrder.ids.Front(); entry != nil && maxLen >= minimum; entry = entry.Next() {
-		id := entry.Value.(protocol.StreamID)
+	appendNew := func(id protocol.StreamID) {
 		str, ok := f.activeStreams[id]
 		if !ok {
-			continue
+			return
 		}
 		for maxLen >= minimum {
 			frame, blocked, more := f.popStreamFrame(id, str, maxLen, v)
@@ -99,6 +78,35 @@ func (f *framer) appendStreamFramesByCreation(frames []ackhandler.Frame, streams
 			}
 		}
 	}
+	// Within the higher class, retain creation order across lost ranges and
+	// optionally write-closed streams. A blocked stream never stalls a later
+	// stream. The default retains a separate retransmissions-only pass.
+	for entry := f.creationOrder.ids.Front(); entry != nil && maxLen >= minimum; entry = entry.Next() {
+		id := entry.Value.(protocol.StreamID)
+		if str := f.retransmissionStreams[id]; str != nil {
+			for maxLen >= minimum {
+				frame, more := str.popRetransmissionFrame(maxLen+protocol.ByteCount(quicvarint.Len(uint64(maxLen))), v)
+				if !more {
+					delete(f.retransmissionStreams, id)
+				}
+				if frame.Frame != nil {
+					appendStream(frame)
+				}
+				if !more || frame.Frame == nil {
+					break
+				}
+			}
+		}
+		if f.creationOrder.prioritizeFinished && f.hasFinishedWrite(id) {
+			appendNew(id)
+		}
+	}
+	for entry := f.creationOrder.ids.Front(); entry != nil && maxLen >= minimum; entry = entry.Next() {
+		id := entry.Value.(protocol.StreamID)
+		if !f.creationOrder.prioritizeFinished || !f.hasFinishedWrite(id) {
+			appendNew(id)
+		}
+	}
 	if blocked, offset := f.connFlowController.IsNewlyBlocked(); blocked {
 		appendBlocked(&wire.DataBlockedFrame{MaximumData: offset})
 	}
@@ -108,4 +116,16 @@ func (f *framer) appendStreamFramesByCreation(frames []ackhandler.Frame, streams
 		length += last.Length(v)
 	}
 	return frames, streams, length
+}
+
+// Called with framer.mutex held. Concrete streams publish their write-side FIN
+// under their own mutex; no application priority or stream ID is inferred.
+func (f *framer) hasFinishedWrite(id protocol.StreamID) bool {
+	stream, ok := f.activeStreams[id].streamFrameGetter.(*SendStream)
+	if !ok {
+		return false
+	}
+	stream.mutex.Lock()
+	defer stream.mutex.Unlock()
+	return stream.finishedWriting && stream.resetErr == nil && stream.shutdownErr == nil
 }

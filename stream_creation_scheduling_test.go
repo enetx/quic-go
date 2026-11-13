@@ -2,6 +2,7 @@ package quic
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 
 	"github.com/enetx/quic-go/internal/ackhandler"
@@ -10,9 +11,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func creationTestStreams(t *testing.T, uniCredit protocol.ByteCount) (*framer, *SendStream, *Stream) {
+func creationTestStreams(t *testing.T, uniCredit protocol.ByteCount, prioritizeFinished ...bool) (*framer, *SendStream, *Stream) {
 	t.Helper()
-	tc := newClientTestConnection(t, nil, &Config{ClientHandshake: &ClientHandshake{StreamSchedulingByCreation: true}}, true)
+	handshake := &ClientHandshake{StreamSchedulingByCreation: true}
+	if len(prioritizeFinished) > 0 {
+		handshake.PrioritizeFinishedStreams = prioritizeFinished[0]
+	}
+	tc := newClientTestConnection(t, nil, &Config{ClientHandshake: handshake}, true)
 	tc.conn.restoreTransportParameters(&wire.TransportParameters{ActiveConnectionIDLimit: 2, InitialMaxData: 8192, InitialMaxStreamDataUni: uniCredit, InitialMaxStreamDataBidiRemote: 4096, MaxUniStreamNum: 3, MaxBidiStreamNum: 3})
 	control, err := tc.conn.OpenUniStream()
 	require.NoError(t, err)
@@ -27,6 +32,118 @@ func creationTestStreams(t *testing.T, uniCredit protocol.ByteCount) (*framer, *
 	_, err = control.Write(bytes.Repeat([]byte("C"), 100))
 	require.NoError(t, err)
 	return tc.conn.framer, control, request
+}
+
+func TestCreationSchedulingFinishedWritePriority(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			f, control, request := creationTestStreams(t, 4096, enabled)
+			require.NoError(t, request.Close())
+			frames := creationAppend(f, 1200)
+			require.Len(t, frames, 2)
+			want := []StreamID{control.StreamID(), request.StreamID()}
+			if enabled {
+				want[0], want[1] = want[1], want[0]
+			}
+			for i, frame := range frames {
+				require.Equal(t, want[i], frame.Frame.StreamID)
+				if frame.Frame.StreamID == request.StreamID() {
+					require.True(t, frame.Frame.Fin)
+					require.Len(t, frame.Frame.Data, 100)
+				}
+			}
+		})
+	}
+}
+
+func TestCreationSchedulingFinishedBytesSpanPackets(t *testing.T) {
+	f, control, request := creationTestStreams(t, 4096, true)
+	require.NoError(t, request.sendStr.TryWriteAll(bytes.Repeat([]byte("R"), 3000)))
+	require.NoError(t, request.Close())
+	var received int
+	var sawFIN, sawControl bool
+	for range 8 {
+		frames := creationAppend(f, 700)
+		if len(frames) == 0 {
+			break
+		}
+		for _, frame := range frames {
+			if frame.Frame.StreamID == control.StreamID() {
+				require.True(t, sawFIN, "ordinary new data passed a sendable finished stream")
+				sawControl = true
+				continue
+			}
+			require.Equal(t, request.StreamID(), frame.Frame.StreamID)
+			received += len(frame.Frame.Data)
+			if frame.Frame.Fin {
+				require.False(t, sawFIN)
+				require.NotEmpty(t, frame.Frame.Data)
+				sawFIN = true
+			}
+		}
+	}
+	require.Equal(t, 3100, received)
+	require.True(t, sawFIN && sawControl)
+}
+
+func TestCreationSchedulingFinishedAndLostShareCreationOrder(t *testing.T) {
+	for _, finishControl := range []bool{false, true} {
+		t.Run(fmt.Sprint(finishControl), func(t *testing.T) {
+			f, control, request := creationTestStreams(t, 4096, true)
+			original := creationAppend(f, 1200)
+			require.Len(t, original, 2)
+			if finishControl {
+				require.NoError(t, control.TryWriteAll([]byte("finished control")))
+				require.NoError(t, control.Close())
+				original[1].Handler.OnLost(original[1].Frame)
+			} else {
+				require.NoError(t, request.sendStr.TryWriteAll([]byte("finished request")))
+				require.NoError(t, request.Close())
+				original[0].Handler.OnLost(original[0].Frame)
+			}
+			frames := creationAppend(f, 1200)
+			require.Len(t, frames, 2)
+			// The same class interleaves by creation, even when the earlier
+			// stream has fresh finished bytes and the later stream has loss.
+			require.Equal(t, control.StreamID(), frames[0].Frame.StreamID)
+			require.Equal(t, request.StreamID(), frames[1].Frame.StreamID)
+			if finishControl {
+				require.True(t, frames[0].Frame.Fin)
+			} else {
+				require.True(t, frames[1].Frame.Fin)
+			}
+		})
+	}
+}
+
+func TestCreationSchedulingPendingFINPriorityAndRejectionReset(t *testing.T) {
+	f, control, request := creationTestStreams(t, 4096, true)
+	creationAppend(f, 1200)
+	require.NoError(t, request.Close())
+	require.NoError(t, control.TryWriteAll([]byte("open stream")))
+	frames := creationAppend(f, 1200)
+	require.Len(t, frames, 2)
+	require.Equal(t, request.StreamID(), frames[0].Frame.StreamID)
+	require.True(t, frames[0].Frame.Fin)
+	require.Empty(t, frames[0].Frame.Data)
+	f.Handle0RTTRejection()
+	require.Empty(t, f.creationOrder.entries)
+	require.True(t, f.creationOrder.prioritizeFinished)
+	require.False(t, f.HasData())
+}
+
+func TestCreationSchedulingBlockedFinishedWriteSkipsToOpenStream(t *testing.T) {
+	f, control, request := creationTestStreams(t, 0, true)
+	require.NoError(t, control.Close())
+	frames := creationAppend(f, 50)
+	require.NotEmpty(t, frames)
+	require.Equal(t, request.StreamID(), frames[0].Frame.StreamID)
+	control.updateSendWindow(4096)
+	frames = creationAppend(f, 1200)
+	require.Len(t, frames, 2)
+	require.Equal(t, control.StreamID(), frames[0].Frame.StreamID)
+	require.True(t, frames[0].Frame.Fin)
+	require.Equal(t, request.StreamID(), frames[1].Frame.StreamID)
 }
 
 func creationAppend(f *framer, budget protocol.ByteCount) []ackhandler.StreamFrame {

@@ -149,10 +149,16 @@ type ClientHandshake struct {
 	// ACK or handshake confirmation. False retains the native normal-send path.
 	InitialCryptoCoalescingBarrier bool
 	// StreamSchedulingByCreation services writable streams in their creation
-	// order instead of urgency/incremental queues. Retransmissions retain their
-	// precedence over new data. Blocked streams never block later streams. This
+	// order instead of urgency/incremental queues. Retransmissions precede new
+	// data unless PrioritizeFinishedStreams also admits finished writes to that
+	// class. Blocked streams never block later streams. This
 	// takes precedence over SetPriority and retains state only for open streams.
 	StreamSchedulingByCreation bool
+	// PrioritizeFinishedStreams groups new bytes and FIN of write-closed
+	// streams with retransmissions, preserving creation order within that
+	// class. Ordinary new data follows. Applies only to creation-order
+	// scheduling; false retains retransmissions-before-new-data behavior.
+	PrioritizeFinishedStreams bool
 	// OmitInitialAckOnHandshake omits an ACK-only Initial when client
 	// Handshake data is ready. Initial keys are discarded when Handshake sends.
 	OmitInitialAckOnHandshake bool
@@ -594,6 +600,7 @@ func (c *Conn) configureClientPacketPacker() {
 		p.initialCryptoCoalescingBarrier = h.InitialCryptoCoalescingBarrier
 		if h.StreamSchedulingByCreation {
 			c.framer.enableStreamCreationOrder()
+			c.framer.creationOrder.prioritizeFinished = h.PrioritizeFinishedStreams
 		}
 		if h.PacketNumberLengthPolicy != nil {
 			p.coalescedPacketSize = func(space protocol.PacketNumberSpace, size protocol.ByteCount) {

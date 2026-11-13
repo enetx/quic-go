@@ -115,6 +115,16 @@ while more Initial CRYPTO is queued. Both default off.
 open-stream creation order, while preserving retransmission precedence and
 skipping credit-blocked streams. Its linked state contains IDs only and is
 removed on completion or 0-RTT rejection. Other connections keep native queues.
+Within that scheduler, `PrioritizeFinishedStreams` optionally services queued
+bytes and FIN of write-closed streams in the retransmission class. Lost ranges
+and finished writes retain creation order together; ordinary new data follows.
+The stream's existing mutex protects its write-side state. Reset/canceled
+streams are not promoted. The option has no effect on urgency/incremental
+scheduling and does not alter HTTP priority fields, flow-control credit, packet
+sizes or send timing. It defaults off and is copied with the handshake options.
+Regressions cover both defaults, finished data spanning packets, empty FIN,
+creation order across loss and new finished data, blocked credit and rejection
+cleanup. All policy selections remain in Surf's public builder/presets.
 These are generic opt-in mechanisms; all browser selections remain in Surf.
 
 `python3 scripts/upstream.py audit` compares with the pinned Git source after
