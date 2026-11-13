@@ -144,6 +144,7 @@ type connPairOpts struct {
 	clientRecorder        qlogwriter.Recorder
 	serverRecorder        qlogwriter.Recorder
 	serverBidiStreamLimit int64
+	serverStreamWindow    uint64
 	enableDatagrams       bool
 }
 
@@ -165,10 +166,14 @@ func withServerBidiStreamLimit(limit int64) connPairOpt {
 	return func(o *connPairOpts) { o.serverBidiStreamLimit = limit }
 }
 
+func withServerStreamWindow(window uint64) connPairOpt {
+	return func(o *connPairOpts) { o.serverStreamWindow = window }
+}
+
 func newConnPair(t *testing.T, opts ...connPairOpt) (client, server *quic.Conn) {
 	t.Helper()
 
-	var o connPairOpts
+	o := connPairOpts{serverStreamWindow: maxByteCount}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -177,7 +182,7 @@ func newConnPair(t *testing.T, opts ...connPairOpt) (client, server *quic.Conn) 
 		newUDPConnLocalhost(t),
 		getTLSConfig(),
 		&quic.Config{
-			InitialStreamReceiveWindow:     maxByteCount,
+			InitialStreamReceiveWindow:     o.serverStreamWindow,
 			InitialConnectionReceiveWindow: maxByteCount,
 			MaxIncomingStreams:             o.serverBidiStreamLimit,
 			EnableDatagrams:                o.enableDatagrams,

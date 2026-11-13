@@ -227,6 +227,35 @@ HTTP/3 settings can share the client's first post-handshake flight; the option
 cannot guarantee NIC batching, a fixed datagram size, identical handshake ACK
 scheduling or shared congestion state with another implementation.
 
+## Ready QPACK instructions with request headers
+
+`WireConfig.CoalesceRequestHeaders` also stages already queued encoder
+instructions with HEADERS and optional FIN. `qpack_batch.go` borrows an idle
+encoder writer before header encoding and submits the ready queue snapshot in
+the existing `Conn.TryWriteStreamBatch` operation. The snapshot is bounded by
+the encoder queue; concurrent producers cannot extend the drain indefinitely.
+Stream type and encoder instruction order remain unchanged.
+
+The asynchronous writer claims ownership before dequeuing instructions. It
+first tries `SendStream.TryWriteAll`, including after a previously staged type
+or capacity prefix. A blocking `Write` would otherwise wait for that reserved
+prefix to be packetized, keeping the writer busy through the request's send
+opportunity. Busy writers, missing stream credit and flow-control backpressure
+retain their asynchronous path; requests never wait for the encoder writer.
+
+After a partially accepted batch, only unaccepted encoder bytes remain pending.
+Accepted prefixes are never replayed. Encoder ownership is released before a
+request's blocking fallback write, including cancellation and validation errors.
+Priority updates retain the same accepted-prefix accounting. Nil/default wire
+configuration retains the upstream request path; QPACK itself remains opt-in.
+
+`qpack_batch_test.go` covers real packet grouping, FIN, busy writers, validation,
+encoder/request/control backpressure, batch-size limits, partial acceptance,
+concurrent writers and cancellation. `../tests/http3/qpack_encoder_test.go`
+compares dynamic decoding and feedback with batching enabled and disabled,
+including concurrent POST bodies and trailers. Browser values and policy remain
+in Surf. This operation does not prescribe a stream order or packet count.
+
 ## Per-connection reserved SETTINGS
 
 `WireConfig.SettingsGrease` generates one reserved SETTINGS identifier/value when

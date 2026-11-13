@@ -70,9 +70,10 @@ type WireConfig struct {
 	// gets its own send opportunity first. Congestion and pacing can defer either
 	// write; packet counts and delivery are not fixed. Does not enable early data.
 	FlushEarlySettings bool
-	// CoalesceRequestHeaders stages initial priority, request HEADERS and a
-	// bodyless request's FIN in one connection-loop turn. Congestion and packet
-	// size limits still apply. Blocked control streams retain asynchronous writes.
+	// CoalesceRequestHeaders stages initial priority, ready QPACK encoder
+	// instructions, request HEADERS and a bodyless request's FIN in one
+	// connection-loop turn. Congestion and packet size limits still apply.
+	// Busy or blocked critical streams retain their asynchronous owner.
 	CoalesceRequestHeaders bool
 	// RequestBodyBufferSize controls reads from request bodies. Zero uses 8 KiB.
 	RequestBodyBufferSize int
@@ -271,6 +272,9 @@ func (c *ClientConn) configureWire(config *WireConfig) {
 	c.requestWriter.greaseFrames = config.RequestGreaseFrames
 	if config.CoalesceRequestHeaders {
 		c.requestWriter.writeRequestHeaders = c.writeRequestHeaders
+		if c.rawConn.clientQPACK != nil {
+			c.requestWriter.prepareRequestHeaders = c.prepareQPACKRequestHeaders
+		}
 	}
 }
 

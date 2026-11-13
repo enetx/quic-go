@@ -10,7 +10,8 @@ import (
 
 type requestHeaderWriter struct {
 	io.Writer
-	fin bool
+	fin   bool
+	qpack *qpackHeaderBatch
 }
 
 func (w *clientControlWriter) attachStream(stream *quic.SendStream) {
@@ -47,6 +48,16 @@ func (c *ClientConn) writeRequestHeaders(wr io.Writer, req *http.Request, id qui
 	if c.wireConfig.SendPriorityUpdates && explicit && (u != defaultPriorityUrgency || incremental) {
 		priority = c.priorityUpdateFrame(id, u, incremental)
 	}
+	if writer, ok := wr.(*requestHeaderWriter); ok && writer.qpack != nil {
+		done, err := c.tryQPACKRequestBatch(writer.qpack, priority, request)
+		// The fallback can wait for request-stream credit. Return the critical
+		// stream to its asynchronous owner before any blocking request write.
+		writer.qpack.release()
+		if done || !errors.Is(err, quic.ErrWouldBlock) {
+			return err
+		}
+		return writeRequestHeaderFallback(wr, data)
+	}
 	if len(priority) == 0 {
 		n, err := c.conn.TryWriteStreamBatch([]quic.StreamWrite{request})
 		if n == 1 || !errors.Is(err, quic.ErrWouldBlock) {
@@ -65,6 +76,10 @@ func (c *ClientConn) writeRequestHeaders(wr io.Writer, req *http.Request, id qui
 	}
 	// Backpressure retains the native blocking request write; no body is read
 	// or replayed. The bounded asynchronous writer owns the remaining update.
+	return writeRequestHeaderFallback(wr, data)
+}
+
+func writeRequestHeaderFallback(wr io.Writer, data []byte) error {
 	n, err := wr.Write(data)
 	if err == nil && n != len(data) {
 		err = io.ErrShortWrite

@@ -148,11 +148,14 @@ func (q *QPACKConfig) Validate() error {
 type clientQPACKStream struct {
 	owner      *rawConn
 	typ        QPACKStreamType
-	stream     *quic.SendStream // reserved before ready is closed, then owned by run
+	stream     *quic.SendStream // Reserved before ready; writeMutex owns later access.
 	queue      chan []byte
+	wake       chan struct{}
 	ready      <-chan struct{}
+	writeMutex sync.Mutex  // Owns the send stream and pending instructions after ready.
+	pending    []byte      // Retained when a request batch cannot accept its encoder write.
 	eager      bool        // set before ready is closed
-	typeStaged bool        // published by ready; the writer resumes after staged bytes
+	typeStaged bool        // Published by ready, then protected by writeMutex.
 	reserved   atomic.Bool // stream credit exists before admitting dynamic references
 }
 
@@ -164,9 +167,17 @@ func (s *clientQPACKStream) enqueue(data []byte) error {
 	}
 	select {
 	case s.queue <- data:
+		s.notify()
 		return nil
 	default:
 		return errQPACKFeedbackBacklog
+	}
+}
+
+func (s *clientQPACKStream) notify() {
+	select {
+	case s.wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -186,37 +197,67 @@ func (s *clientQPACKStream) run() {
 		return
 	case <-s.ready:
 	}
-	typeSent := s.typeStaged
-	pendingType := s.eager && !typeSent
 	for {
-		var data []byte
-		if pendingType {
-			pendingType = false
-		} else {
+		// Claim ownership before removing an instruction from the queue. A
+		// request can then stage all queued instructions without overtaking a
+		// write already owned by this worker. Idle workers retain no lock.
+		s.writeMutex.Lock()
+		data := s.pending
+		if data == nil && !(s.eager && !s.typeStaged) {
 			select {
-			case <-ctx.Done():
-				return
 			case data = <-s.queue:
+			default:
+				s.writeMutex.Unlock()
+				select {
+				case <-ctx.Done():
+					return
+				case <-s.wake:
+				}
+				continue
 			}
 		}
-		if s.stream == nil {
-			var err error
-			s.stream, err = s.owner.conn.OpenUniStreamSync(ctx)
-			if err != nil {
-				return
+		s.pending = nil
+		err := s.write(data)
+		s.writeMutex.Unlock()
+		if err != nil {
+			if ctx.Err() == nil {
+				s.owner.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "QPACK send stream write failed")
 			}
-			s.watch()
-			s.reserved.Store(true)
-		}
-		if !typeSent {
-			data = append(quicvarint.Append(nil, uint64(s.typ)), data...)
-			typeSent = true
-		}
-		if _, err := s.stream.Write(data); err != nil {
-			s.owner.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "QPACK send stream write failed")
 			return
 		}
 	}
+}
+
+// write is called only by the asynchronous owner with writeMutex held. Request
+// batching uses TryLock and never waits for this blocking I/O or stream credit.
+func (s *clientQPACKStream) write(data []byte) error {
+	ctx := s.owner.context()
+	if s.stream == nil {
+		var err error
+		s.stream, err = s.owner.conn.OpenUniStreamSync(ctx)
+		if err != nil {
+			return err
+		}
+		s.watch()
+		s.reserved.Store(true)
+	}
+	if !s.typeStaged {
+		data = append(quicvarint.Append(nil, uint64(s.typ)), data...)
+	}
+	// Append immediately to already staged type/capacity bytes when credit
+	// permits. Write would wait for a reserved frame to be packetized first,
+	// unnecessarily keeping the writer busy across the request's send turn.
+	if err := s.stream.TryWriteAll(data); err == nil {
+		s.typeStaged = true
+		return nil
+	} else if !errors.Is(err, quic.ErrWouldBlock) {
+		return err
+	}
+	if _, err := s.stream.Write(data); err != nil {
+		return err
+	}
+	s.typeStaged = true
+	return nil
 }
 
 type clientQPACK struct {
@@ -239,8 +280,8 @@ func (q *QPACKConfig) encoderOptions() dynamic.EncoderOptions {
 
 func newClientQPACK(owner *rawConn, config *QPACKConfig, ready <-chan struct{}, queueSize int) *clientQPACK {
 	q := &clientQPACK{config: config.Clone(), fieldEncoder: dynamic.NewEncoder(config.encoderOptions())}
-	q.encoder = &clientQPACKStream{owner: owner, typ: QPACKEncoderStream, ready: ready, queue: make(chan []byte, 64)}
-	q.decoder = &clientQPACKStream{owner: owner, typ: QPACKDecoderStream, ready: ready, queue: make(chan []byte, queueSize)}
+	q.encoder = &clientQPACKStream{owner: owner, typ: QPACKEncoderStream, ready: ready, queue: make(chan []byte, 64), wake: make(chan struct{}, 1)}
+	q.decoder = &clientQPACKStream{owner: owner, typ: QPACKDecoderStream, ready: ready, queue: make(chan []byte, queueSize), wake: make(chan struct{}, 1)}
 	go q.encoder.run()
 	go q.decoder.run()
 	return q

@@ -29,6 +29,7 @@ type requestWriter struct {
 	encodeQPACK             func(quic.StreamID, []qpack.HeaderField) ([]byte, error)
 	qpackFields             []qpack.HeaderField
 	collectBodyFields       bool
+	prepareRequestHeaders   func(io.Writer) (io.Writer, func())
 	beforeRequestHeaders    func(*http.Request, quic.StreamID) error
 	writeRequestHeaders     func(io.Writer, *http.Request, quic.StreamID, []byte) error
 	greaseFrames            func(*http.Request) ([]GreaseFrame, error)
@@ -48,6 +49,12 @@ func newRequestWriter() *requestWriter {
 }
 
 func (w *requestWriter) WriteRequestHeader(wr io.Writer, req *http.Request, gzip bool, streamID quic.StreamID, qlogger qlogwriter.Recorder, prepareBody ...func([]qpack.HeaderField) error) error {
+	if w.prepareRequestHeaders != nil {
+		var finish func()
+		wr, finish = w.prepareRequestHeaders(wr)
+		defer finish()
+	}
+
 	buf := &bytes.Buffer{}
 	if err := w.writeHeaders(buf, req, gzip, streamID, qlogger, prepareBody...); err != nil {
 		return err

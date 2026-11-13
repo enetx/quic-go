@@ -38,12 +38,21 @@ func dynamicPeerSettings(t *testing.T, p *qpackStartupPair, capacity, blocked ui
 }
 
 func TestHTTP3DynamicRequestEncoder(t *testing.T) {
+	for _, coalesce := range []bool{false, true} {
+		t.Run(fmt.Sprintf("coalesce=%v", coalesce), func(t *testing.T) {
+			testHTTP3DynamicRequestEncoder(t, coalesce)
+		})
+	}
+}
+
+func testHTTP3DynamicRequestEncoder(t *testing.T, coalesce bool) {
+	t.Helper()
 	for _, postBase := range []bool{false, true} {
 		for _, capacity := range []uint64{128, 4096} {
 			t.Run(fmt.Sprintf("post=%t/capacity=%d", postBase, capacity), func(t *testing.T) {
 				config := &http3.QPACKConfig{DynamicTable: true, EncoderTableCapacity: capacity, PostBaseReferences: postBase,
 					Huffman: http3.QPACKHuffmanAuto, StreamOrder: []http3.QPACKStreamType{http3.QPACKEncoderStream, http3.QPACKDecoderStream}}
-				p := newQPACKStartupPair(t, config, nil)
+				p := newQPACKStartupPair(t, config, nil, &http3.WireConfig{CoalesceRequestHeaders: coalesce})
 				p.readControl(t)
 				dynamicPeerSettings(t, p, 65536, 2)
 				feedbackStream, err := p.server.OpenUniStream()
@@ -151,6 +160,15 @@ func TestHTTP3DynamicEncoderWithoutStreamCredit(t *testing.T) {
 }
 
 func TestHTTP3DynamicEncoderConcurrentRequests(t *testing.T) {
+	for _, coalesce := range []bool{false, true} {
+		t.Run(fmt.Sprintf("coalesce=%v", coalesce), func(t *testing.T) {
+			testHTTP3DynamicEncoderConcurrentRequests(t, coalesce)
+		})
+	}
+}
+
+func testHTTP3DynamicEncoderConcurrentRequests(t *testing.T, coalesce bool) {
+	t.Helper()
 	for _, capacity := range []uint64{0, 4096} {
 		t.Run(fmt.Sprint(capacity), func(t *testing.T) {
 			packet, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -170,7 +188,8 @@ func TestHTTP3DynamicEncoderConcurrentRequests(t *testing.T) {
 			go server.Serve(packet)
 			t.Cleanup(func() { server.Close(); packet.Close() })
 			transport := &http3.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-				QPACKConfig: &http3.QPACKConfig{DynamicTable: true, EncoderTableCapacity: 4096}}
+				QPACKConfig: &http3.QPACKConfig{DynamicTable: true, EncoderTableCapacity: 4096},
+				WireConfig:  &http3.WireConfig{CoalesceRequestHeaders: coalesce}}
 			defer transport.Close()
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
