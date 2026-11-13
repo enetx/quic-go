@@ -9,6 +9,7 @@ import (
 	"github.com/enetx/quic-go/internal/protocol"
 	"github.com/enetx/quic-go/qlogwriter"
 	"github.com/enetx/quic-go/quicvarint"
+	"github.com/enetx/quic-go/transportparams"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -86,8 +87,12 @@ func configWithNonZeroNonFunctionFields(t *testing.T) *Config {
 		}
 
 		switch fn := typ.Field(i).Name; fn {
-		case "GetConfigForClient", "RequireAddressValidation", "GetLogWriter", "AllowConnectionWindowIncrease", "Tracer":
+		case "GetConfigForClient", "RequireAddressValidation", "GetLogWriter", "AllowConnectionWindowIncrease", "Tracer", "ValidatePeerTransportParameters":
 			// Can't compare functions.
+		case "ServerTransportParameters":
+			f.Set(reflect.ValueOf(&transportparams.Layout{Additional: []transportparams.Parameter{{ID: 0x3128, Value: []byte("TEST")}}}))
+		case "PeerTransportParameterIDs":
+			f.Set(reflect.ValueOf([]uint64{0x3128}))
 		case "ClientHandshake":
 			f.Set(reflect.ValueOf(&ClientHandshake{InitialPacketNumber: 1}))
 		case "LegacyAckFrequencyMinDelay":

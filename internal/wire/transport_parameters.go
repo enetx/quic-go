@@ -67,6 +67,12 @@ type PreferredAddress struct {
 
 // TransportParameters are parameters sent to the peer during the handshake
 type TransportParameters struct {
+	// ServerLayout is an optional local server encoding layout, never ticket state.
+	ServerLayout *transportparams.Layout
+	// UnknownParameters retains extension bytes from this handshake only.
+	UnknownParameters []transportparams.Parameter
+	// CapturePeerParameters is local-only; nil retains native unknown-field handling.
+	CapturePeerParameters []uint64
 	// VersionInformation is exchanged only when explicitly supplied. The mode
 	// flag is local metadata, never serialized into a transport parameter.
 	VersionInformation           *VersionInformation
@@ -125,6 +131,7 @@ func (p *TransportParameters) Unmarshal(data []byte, sentBy protocol.Perspective
 
 func (p *TransportParameters) unmarshal(b []byte, sentBy protocol.Perspective, fromSessionTicket bool) error {
 	p.VersionInformation = nil
+	p.UnknownParameters = nil
 	// needed to check that every parameter is only sent at most once
 	parameterIDs := make([]transportParameterID, 0, 32)
 
@@ -252,6 +259,9 @@ func (p *TransportParameters) unmarshal(b []byte, sentBy protocol.Perspective, f
 				// A ticket might contain a parameter for an extension supported by an older
 				// version of this endpoint. If we can't parse it, don't resume with it.
 				return fmt.Errorf("unknown transport parameter %#x in session ticket", paramID)
+			}
+			if slices.Contains(p.CapturePeerParameters, uint64(paramID)) {
+				p.UnknownParameters = append(p.UnknownParameters, transportparams.Parameter{ID: uint64(paramID), Value: slices.Clone(b[:paramLen])})
 			}
 			b = b[paramLen:]
 		}
@@ -520,7 +530,7 @@ func (p *TransportParameters) Marshal(pers protocol.Perspective) []byte {
 	if pers == protocol.PerspectiveClient {
 		return p.ClientLayout.Apply(b)
 	}
-	return b
+	return p.ServerLayout.Apply(b)
 }
 
 func (p *TransportParameters) marshalVarintParam(b []byte, id transportParameterID, val uint64) []byte {

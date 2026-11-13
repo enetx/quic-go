@@ -48,9 +48,10 @@ func (r *countingByteReader) Reset() {
 }
 
 type frameParser struct {
-	r         io.Reader
-	streamID  quic.StreamID
-	closeConn func(quic.ApplicationErrorCode, string) error
+	onUnknownFrame func(ControlFrame) error // Installed only after client SETTINGS.
+	r              io.Reader
+	streamID       quic.StreamID
+	closeConn      func(quic.ApplicationErrorCode, string) error
 }
 
 func (p *frameParser) ParseNext(qlogger qlogwriter.Recorder) (frame, error) {
@@ -133,6 +134,20 @@ func (p *frameParser) ParseNext(qlogger qlogwriter.Recorder) (frame, error) {
 					Raw:      qlog.RawInfo{Length: r.NumRead + int(l), PayloadLength: int(l)},
 					Frame:    qlog.Frame{Frame: qlog.UnknownFrame{Type: t}},
 				})
+			}
+			if p.onUnknownFrame != nil {
+				payload := &io.LimitedReader{R: r, N: int64(l)}
+				if err := p.onUnknownFrame(ControlFrame{Type: t, Length: l, Payload: payload}); err != nil {
+					return nil, err
+				}
+				if _, err := io.Copy(io.Discard, payload); err != nil {
+					return nil, err
+				}
+				if payload.N != 0 {
+					return nil, io.ErrUnexpectedEOF
+				}
+				r.Reset()
+				continue
 			}
 		}
 

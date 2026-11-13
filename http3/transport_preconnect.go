@@ -44,9 +44,9 @@ func (t *Transport) preconnect(ctx context.Context, address string, early bool) 
 	var failed bool
 	defer func() {
 		t.mutex.Lock()
-		closeAttempt := client.useCount.Add(-1) == 0 && failed && t.clients[address] == client
+		closeAttempt := client.useCount.Add(-1) == 0 && failed && client.authority == address && t.clients[client.poolKey] == client
 		if closeAttempt {
-			delete(t.clients, address)
+			delete(t.clients, client.poolKey)
 		}
 		t.mutex.Unlock()
 		if closeAttempt {

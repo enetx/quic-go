@@ -338,6 +338,8 @@ var newConnection = func(
 	s.maxPayloadSizeEstimate.Store(uint32(estimateMaxPayloadSize(s.config.initialPacketSize())))
 	statelessResetToken := statelessResetter.GetStatelessResetToken(srcConnID)
 	params := &wire.TransportParameters{
+		ServerLayout:                    s.config.ServerTransportParameters,
+		CapturePeerParameters:           s.config.PeerTransportParameterIDs,
 		InitialMaxStreamDataBidiLocal:   protocol.ByteCount(s.config.InitialStreamReceiveWindow),
 		InitialMaxStreamDataBidiRemote:  protocol.ByteCount(s.config.InitialStreamReceiveWindow),
 		InitialMaxStreamDataUni:         protocol.ByteCount(s.config.InitialStreamReceiveWindow),
@@ -489,6 +491,7 @@ var newClientConnection = func(
 	oneRTTStream := newCryptoStream()
 	params := &wire.TransportParameters{
 		InitialMaxStreamDataBidiRemote: protocol.ByteCount(s.config.InitialStreamReceiveWindow),
+		CapturePeerParameters:          s.config.PeerTransportParameterIDs,
 		InitialMaxStreamDataBidiLocal:  protocol.ByteCount(s.config.InitialStreamReceiveWindow),
 		InitialMaxStreamDataUni:        protocol.ByteCount(s.config.InitialStreamReceiveWindow),
 		InitialMaxData:                 protocol.ByteCount(s.config.InitialConnectionReceiveWindow),
@@ -2554,6 +2557,9 @@ func (c *Conn) handleTransportParameters(params *wire.TransportParameters) error
 			ErrorCode:    qerr.TransportParameterError,
 			ErrorMessage: err.Error(),
 		}
+	}
+	if err := c.validatePeerTransportParameters(params); err != nil {
+		return err
 	}
 
 	if c.perspective == protocol.PerspectiveClient && c.peerParams != nil && c.ConnectionState().Used0RTT && !params.ValidForUpdate(c.peerParams) {

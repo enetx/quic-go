@@ -684,3 +684,23 @@ reschedules owned tokens. A new Application ACK, including retained actual-loss
 metadata, ends the mechanism. Authentication failures and retired keys do not
 trigger it. Firefox's selection policy remains in Surf; default clients and
 servers do not enable it. PING only retains the existing CRYPTO/ACK behavior.
+
+## Optional peer transport extensions
+
+`Config.PeerTransportParameterIDs` selects otherwise unknown extension bytes for
+the current handshake. `ValidatePeerTransportParameters` receives owned copies
+before publication; errors fail the handshake with TRANSPORT_PARAMETER_ERROR.
+`Conn.PeerTransportParameter` exposes another private copy only after verified
+handshake completion. These bytes never come from session-ticket restoration.
+Native duplicate/known-parameter validation remains authoritative. Nil capture
+and validator retain native handling. Browser tag formats and defaults live in
+Surf, outside this generic extension point.
+
+`Config.ServerTransportParameters` optionally applies the existing validated
+layout encoder to local server parameters, including extension fixtures. Clone
+and populate operations own the layout and capture-ID slices. The local layout
+and captured fields are never serialized as ticket state.
+
+The changes are isolated in `peer_transport_parameters.go`, configuration
+copying, the transport-parameter parser and handshake event handoff. Regressions
+cover current-handshake ownership, clone immutability, rejected state and tickets.

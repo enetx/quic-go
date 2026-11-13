@@ -36,6 +36,7 @@ type Settings struct {
 
 // RoundTripOpt contains options for [Transport.RoundTripOpt].
 type RoundTripOpt struct {
+	allowRetryDial bool // RoundTripCached preserves ownership only on an initial cache miss.
 	// OnlyCachedConn controls whether the Transport may create a new QUIC connection.
 	// If true and no cached connection is available, [Transport.RoundTripOpt] returns [ErrNoCachedConn].
 	OnlyCachedConn bool
@@ -48,6 +49,9 @@ type clientConn interface {
 }
 
 type roundTripperWithCount struct {
+	poolKey    string
+	partition  string
+	authority  string
 	cancel     context.CancelFunc
 	dialing    chan struct{} // closed as soon as quic.Dial(Early) returned
 	dialErr    error
@@ -68,6 +72,17 @@ func (r *roundTripperWithCount) Close() error {
 
 // Transport implements the [http.RoundTripper] interface.
 type Transport struct {
+	// ConnectionPoolPartition partitions both exact-authority lookup and
+	// cross-authority reuse. The authority is always included in the actual key.
+	// It must be pure, concurrency safe, stable for an attempt and not reenter
+	// the transport. Nil retains the native single-partition pool.
+	ConnectionPoolPartition func(context.Context, string) string
+	// ConnectionReusePolicy may authorize an established connection for another
+	// authority. The callback owns certificate, route and privacy checks. Only
+	// live, handshake-complete, non-draining native clients are considered; nil
+	// retains the native per-authority pool. It runs outside pool locks, may run
+	// concurrently and must respect ctx. Preconnect invokes the same policy.
+	ConnectionReusePolicy func(context.Context, ConnectionReuseInfo) bool
 	// EarlyDataRestart keeps a rejected 0-RTT connection and recreates HTTP/3
 	// protocol state after verified TLS. Replayable requests restart once;
 	// the default preserves the caller-managed rejection behavior.
@@ -243,7 +258,11 @@ func (t *Transport) doRoundTripOpt(req *http.Request, opt RoundTripOpt, isRetrie
 	hostname := authorityAddr(hostnameFromURL(req.URL))
 	trace := httptrace.ContextClientTrace(req.Context())
 	traceGetConn(trace, hostname)
-	cl, isReused, err := t.getClient(req.Context(), hostname, opt.OnlyCachedConn)
+	getClient := t.getClient
+	if isRetried || req.Host != "" && authorityAddr(req.Host) != hostname {
+		getClient = t.getClientForHost
+	}
+	cl, isReused, err := getClient(req.Context(), hostname, opt.OnlyCachedConn)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +275,7 @@ func (t *Transport) doRoundTripOpt(req *http.Request, opt RoundTripOpt, isRetrie
 	}
 
 	if cl.dialErr != nil {
-		t.removeClient(hostname)
+		t.removeClient(cl)
 		return nil, cl.dialErr
 	}
 	traceGotConn(trace, cl.conn, isReused)
@@ -272,10 +291,20 @@ func (t *Transport) doRoundTripOpt(req *http.Request, opt RoundTripOpt, isRetrie
 			return nil, err
 		}
 
-		t.removeClient(hostname)
+		if t.ConnectionReusePolicy == nil {
+			t.removeClient(cl)
+		}
 		req, err = canRetryRequest(err, req)
+		// A request-local failure must not retire another authority's healthy
+		// shared connection. Connection failures and permitted retries still do.
+		if t.ConnectionReusePolicy != nil && (err == nil || cl.conn.Context().Err() != nil) {
+			t.removeClient(cl)
+		}
 		if err != nil {
 			return nil, err
+		}
+		if opt.allowRetryDial {
+			opt.OnlyCachedConn = false
 		}
 		return t.doRoundTripOpt(req, opt, true)
 	}
@@ -283,6 +312,9 @@ func (t *Transport) doRoundTripOpt(req *http.Request, opt RoundTripOpt, isRetrie
 }
 
 func canRetryRequest(err error, req *http.Request) (*http.Request, error) {
+	if _, received := errors.AsType[*responseReceivedError](err); received {
+		return nil, err
+	}
 	if _, local := errors.AsType[*RequestPreparationError](err); local {
 		return nil, err
 	}
@@ -320,7 +352,8 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.RoundTripOpt(req, RoundTripOpt{})
 }
 
-func (t *Transport) getClient(ctx context.Context, hostname string, onlyCached bool) (rtc *roundTripperWithCount, isReused bool, err error) {
+func (t *Transport) getClientForHost(ctx context.Context, hostname string, onlyCached bool) (rtc *roundTripperWithCount, isReused bool, err error) {
+	key, partition := t.clientPoolKey(ctx, hostname)
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 	if t.closed {
@@ -331,7 +364,7 @@ func (t *Transport) getClient(ctx context.Context, hostname string, onlyCached b
 		t.clients = make(map[string]*roundTripperWithCount)
 	}
 
-	cl, ok := t.clients[hostname]
+	cl, ok := t.clients[key]
 	if !ok {
 		if onlyCached {
 			return nil, false, ErrNoCachedConn
@@ -340,6 +373,7 @@ func (t *Transport) getClient(ctx context.Context, hostname string, onlyCached b
 		// so it must not be canceled when the first request is canceled.
 		ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 		cl = &roundTripperWithCount{
+			poolKey: key, partition: partition, authority: hostname,
 			dialing: make(chan struct{}),
 			cancel:  cancel,
 		}
@@ -354,12 +388,12 @@ func (t *Transport) getClient(ctx context.Context, hostname string, onlyCached b
 			cl.conn = conn
 			cl.clientConn = rt
 		}()
-		t.clients[hostname] = cl
+		t.clients[key] = cl
 	}
 	select {
 	case <-cl.dialing:
 		if cl.dialErr != nil {
-			delete(t.clients, hostname)
+			delete(t.clients, key)
 			return nil, false, cl.dialErr
 		}
 		select {
@@ -550,13 +584,15 @@ func (t *Transport) resolveUDPAddr(ctx context.Context, network, addr string) (*
 	return &net.UDPAddr{IP: ip.IP, Port: port, Zone: ip.Zone}, nil
 }
 
-func (t *Transport) removeClient(hostname string) {
+func (t *Transport) removeClient(client *roundTripperWithCount) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 	if t.clients == nil {
 		return
 	}
-	delete(t.clients, hostname)
+	if t.clients[client.poolKey] == client {
+		delete(t.clients, client.poolKey)
+	}
 }
 
 // NewClientConn creates a new HTTP/3 client connection on top of a QUIC connection.
@@ -638,7 +674,7 @@ func (t *Transport) CloseIdleConnections() {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 	for hostname, cl := range t.clients {
-		if cl.useCount.Load() == 0 {
+		if cl.useCount.Load() == 0 && !hasActiveClientStreams(cl.clientConn) {
 			cl.Close()
 			delete(t.clients, hostname)
 		}

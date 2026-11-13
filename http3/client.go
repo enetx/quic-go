@@ -138,6 +138,7 @@ func newClientConnWithWire(
 		qlogger,
 		c.logger,
 	)
+	c.rawConn.strictControlSettings = wireConfig != nil && wireConfig.OnControlFrame != nil
 	c.requestWriter.peerMaxFieldSectionSize = c.rawConn.peerFieldSectionLimit
 	if len(qpackConfig) > 0 && qpackConfig[0] != nil {
 		c.rawConn.clientQPACK = newClientQPACK(c.rawConn, qpackConfig[0], c.initialSettingsWritten,
@@ -245,6 +246,11 @@ func (c *ClientConn) handleUnidirectionalStream(str *quic.ReceiveStream) {
 }
 
 func (c *ClientConn) handleControlStream(str *quic.ReceiveStream, fp *frameParser) {
+	if c.wireConfig != nil && c.wireConfig.OnControlFrame != nil {
+		fp.onUnknownFrame = func(frame ControlFrame) error {
+			return c.wireConfig.OnControlFrame(c.conn, frame)
+		}
+	}
 	for {
 		f, err := fp.ParseNext(c.qlogger)
 		if err != nil {
@@ -531,13 +537,16 @@ func (c *ClientConn) doRequest(req *http.Request, str *RequestStream) (*http.Res
 		var err error
 		res, err = str.ReadResponse()
 		if err != nil {
+			if num1xx > 0 {
+				return nil, &responseReceivedError{err}
+			}
 			return nil, err
 		}
 		if c.wireConfig != nil && c.wireConfig.OnResponseHeaders != nil {
 			if err := c.wireConfig.OnResponseHeaders(req, res); err != nil {
 				str.CancelRead(quic.StreamErrorCode(ErrCodeRequestCanceled))
 				str.CancelWrite(quic.StreamErrorCode(ErrCodeRequestCanceled))
-				return nil, err
+				return nil, &responseReceivedError{err}
 			}
 		}
 		resCode := res.StatusCode
@@ -554,7 +563,7 @@ func (c *ClientConn) doRequest(req *http.Request, str *RequestStream) (*http.Res
 			if err := traceGot1xxResponse(trace, resCode, textproto.MIMEHeader(res.Header)); err != nil {
 				str.CancelRead(quic.StreamErrorCode(ErrCodeRequestCanceled))
 				str.CancelWrite(quic.StreamErrorCode(ErrCodeRequestCanceled))
-				return nil, err
+				return nil, &responseReceivedError{err}
 			}
 			if resCode == http.StatusContinue {
 				traceGot100Continue(trace)

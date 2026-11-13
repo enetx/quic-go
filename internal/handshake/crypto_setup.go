@@ -339,6 +339,9 @@ func (h *cryptoSetup) NextEvent() Event {
 
 func (h *cryptoSetup) handleTransportParameters(data []byte) error {
 	tp := wire.TransportParameters{ParseLegacyAckFrequency: h.ourParams != nil && h.ourParams.ParseLegacyAckFrequency}
+	if h.ourParams != nil {
+		tp.CapturePeerParameters = h.ourParams.CapturePeerParameters
+	}
 	if err := tp.Unmarshal(data, h.perspective.Opposite()); err != nil {
 		return err
 	}

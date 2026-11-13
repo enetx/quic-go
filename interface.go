@@ -11,6 +11,7 @@ import (
 	"github.com/enetx/quic-go/internal/handshake"
 	"github.com/enetx/quic-go/internal/protocol"
 	"github.com/enetx/quic-go/qlogwriter"
+	"github.com/enetx/quic-go/transportparams"
 )
 
 // The StreamID is the ID of a QUIC stream.
@@ -104,6 +105,20 @@ type ConnectionIDGenerator interface {
 
 // Config contains all configuration data needed for a QUIC server or client.
 type Config struct {
+	// ServerTransportParameters optionally controls the server's parameter encoding
+	// and advertises application-owned extensions. It does not implement those
+	// extensions. Nil retains native encoding; client layouts use ClientHandshake.
+	ServerTransportParameters *transportparams.Layout
+	// PeerTransportParameterIDs selects unrecognized extension values to retain
+	// from the current handshake for PeerTransportParameter. Nil retains none.
+	// Values are not restored from session tickets or interpreted by the engine.
+	PeerTransportParameterIDs []uint64
+	// ValidatePeerTransportParameters validates private copies of the selected
+	// unrecognized parameters before accepting current-handshake parameters.
+	// It runs before peer authentication and must not block or reenter QUIC.
+	// An error rejects the handshake with TRANSPORT_PARAMETER_ERROR. Nil does
+	// not interpret extensions; session-ticket restoration never calls it.
+	ValidatePeerTransportParameters func([]transportparams.Parameter) error
 	// ClientHandshake provides optional application-owned client handshake controls.
 	ClientHandshake *ClientHandshake
 	// LegacyAckFrequencyMinDelay enables the legacy receive format and advertises

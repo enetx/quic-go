@@ -2,6 +2,7 @@ package quic
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/enetx/quic-go/internal/protocol"
@@ -11,6 +12,8 @@ import (
 // Clone clones a Config.
 func (c *Config) Clone() *Config {
 	copy := *c
+	copy.ServerTransportParameters = c.ServerTransportParameters.Clone()
+	copy.PeerTransportParameterIDs = slices.Clone(c.PeerTransportParameterIDs)
 	copy.ClientHandshake = c.ClientHandshake.Clone()
 	return &copy
 }
@@ -33,6 +36,14 @@ func (c *Config) initialPacketSize() protocol.ByteCount {
 func validateConfig(config *Config) error {
 	if config == nil {
 		return nil
+	}
+	if err := config.ServerTransportParameters.Validate(); err != nil {
+		return err
+	}
+	for _, id := range config.PeerTransportParameterIDs {
+		if id > quicvarint.Max {
+			return fmt.Errorf("peer transport parameter ID exceeds QUIC varint range: %d", id)
+		}
 	}
 	const maxStreams = 1 << 60
 	if config.MaxIncomingStreams > maxStreams {
@@ -113,6 +124,9 @@ func populateConfig(config *Config) *Config {
 		maxIncomingUniStreams = 0
 	}
 	return &Config{
+		ServerTransportParameters:        config.ServerTransportParameters.Clone(),
+		PeerTransportParameterIDs:        slices.Clone(config.PeerTransportParameterIDs),
+		ValidatePeerTransportParameters:  config.ValidatePeerTransportParameters,
 		ClientHandshake:                  config.ClientHandshake.Clone(),
 		LegacyAckFrequencyMinDelay:       config.LegacyAckFrequencyMinDelay,
 		GetConfigForClient:               config.GetConfigForClient,

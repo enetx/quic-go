@@ -267,3 +267,33 @@ The narrow engine hooks and HTTP/3 generation cancellation are kept separate
 from Firefox profile policy. Regressions cover same-connection wire operation,
 unknown tickets, HRR, changed SETTINGS, parallel methods, cancellation, TLS
 verification failure, explicit opt-out and consumed-body replay limits.
+
+## Optional connection reuse and control extensions
+
+`Transport.ConnectionReusePolicy` can authorize a live, confirmed native client
+for another authority. Certificate, route and privacy policy belong to the
+caller. Candidates are pinned outside pool locks, checked again after callbacks,
+and keep one pool owner; no alias entries duplicate closure or QPACK state.
+All candidates receive a no-network pass before any network-enabled pass.
+`ConnectionPoolPartition` separates exact and cross-authority lookups, always
+retaining the authority in the actual key. Nil callbacks preserve native pooling.
+Preconnect shares the policy; abandoning a borrowed preconnect cannot retire its
+owner. Idle closure preserves active response streams. Request-local failures
+cannot evict a healthy shared owner.
+
+`RoundTripCached` performs an initial cache-only probe. Its exact ErrNoCachedConn
+leaves the body caller-owned; after an attempt starts, ordinary retry ownership
+applies. Existing RoundTripOpt behavior is unchanged. A valid response header,
+including 1xx, commits the attempt; callback errors wrapping REQUEST_REJECTED or
+a subsequent reset cannot authorize an internal replay.
+
+`WireConfig.OnControlFrame` observes otherwise unknown server control extensions
+after SETTINGS through a bounded reader. Unread bytes are drained; truncation is
+an error. The optional handler enforces SETTINGS-first framing. Nil keeps native
+unknown-frame handling. This engine contains no ORIGIN, NOIP or browser policy.
+Surf supplies those through its fluent public builder.
+
+The narrow implementation lives in `connection_reuse.go`, `control_frame.go`
+and `response_progress.go`, with small transport/parser hooks. Real QUIC tests
+cover ownership, partitions, cancellation, closure, GOAWAY, active bodies,
+preconnect, callback errors, informational responses and truncated extensions.

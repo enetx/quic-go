@@ -26,12 +26,13 @@ const invalidStreamID = quic.StreamID(-1)
 // It provides HTTP/3 specific functionality by wrapping a quic.Conn,
 // in particular handling of unidirectional HTTP/3 streams, SETTINGS and datagrams.
 type rawConn struct {
-	conn         *quic.Conn
-	ctx          context.Context
-	cancel       context.CancelCauseFunc
-	generationMx sync.RWMutex
-	qpackDecoder *dynamic.Decoder
-	clientQPACK  *clientQPACK
+	strictControlSettings bool // Optional extension handlers require SETTINGS first.
+	conn                  *quic.Conn
+	ctx                   context.Context
+	cancel                context.CancelCauseFunc
+	generationMx          sync.RWMutex
+	qpackDecoder          *dynamic.Decoder
+	clientQPACK           *clientQPACK
 
 	logger *slog.Logger
 
@@ -276,9 +277,12 @@ func (c *rawConn) handleUnidirectionalStream(str *quic.ReceiveStream, isServer b
 
 func (c *rawConn) handleControlStream(str *quic.ReceiveStream) {
 	fp := &frameParser{closeConn: c.CloseWithError, r: str, streamID: str.StreamID()}
+	if c.strictControlSettings {
+		fp.onUnknownFrame = func(ControlFrame) error { return errControlFrameBeforeSettings }
+	}
 	f, err := fp.ParseNext(c.qlogger)
 	if err != nil {
-		if errors.Is(err, errPriorityUpdateForPush) {
+		if errors.Is(err, errPriorityUpdateForPush) || errors.Is(err, errControlFrameBeforeSettings) {
 			c.CloseWithError(quic.ApplicationErrorCode(ErrCodeMissingSettings), "")
 			return
 		}

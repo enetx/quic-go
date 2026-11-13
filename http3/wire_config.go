@@ -48,6 +48,12 @@ type RequestBodyReadInfo struct {
 // Factories may run concurrently on different connections and must not mutate
 // requests or reenter the transport. Returned payloads are copied before use.
 type WireConfig struct {
+	// OnControlFrame handles otherwise unknown frames after the peer's SETTINGS.
+	// The reader is limited to this frame and valid only during the callback.
+	// Unread bytes are drained; a truncated payload or callback error closes the
+	// connection with H3_FRAME_ERROR. Calls are serialized per control stream.
+	// It must not reenter this connection. Nil keeps native extension handling.
+	OnControlFrame func(*quic.Conn, ControlFrame) error
 	// OnResponseHeaders runs after each valid response header block, including
 	// informational responses, before tracing or delivery to the application.
 	// An error aborts the request. The callback must return promptly, must not
