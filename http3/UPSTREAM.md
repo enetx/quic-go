@@ -43,6 +43,33 @@ Preserve these behaviors when updating:
 - The 0-RTT compatibility check treats zero as omitted, matching the encoder.
 - Invalid-header-value errors retain the detailed diagnostics from the fork.
 
+## Client HTTP/3 resumption state
+
+`client_session_settings.go` binds the received server SETTINGS to the exact
+TLS ticket through `tls.SessionState.Extra`. The QUIC engine exposes a single
+per-connection TLS factory decorator; it contains no HTTP/3 or browser policy.
+The HTTP/3 transport composes that decorator with native or custom TLS factories,
+including Surf's uTLS adapter. No TLS-engine patch is needed for this feature.
+
+Tickets received before SETTINGS wait in a bounded per-connection queue. Pending
+insertions retain their opaque cache keys and order; a racing connection cannot
+supply their state. Missing or invalid metadata disables early data while keeping
+ordinary TLS resumption. Application-owned ticket objects remain unchanged.
+
+On 0-RTT, restore peer QPACK limits and the maximum uncompressed field-section
+size. QPACK tables themselves are always fresh. Compatible actual SETTINGS retain
+new table entries and do not repeat the capacity instruction. Incompatible
+accepted early data closes the connection; rejected early data uses fresh limits
+on Surf's post-handshake retry. Unknown settings remain metadata, not implemented
+extension capabilities. Request headers and trailers enforce the peer's known
+field-section limit before changing the encoder or emitting their HEADERS frame.
+
+References: [HTTP/3](https://www.rfc-editor.org/rfc/rfc9114#section-7.2.4.2),
+[QPACK](https://www.rfc-editor.org/rfc/rfc9204#section-3.2.3),
+[datagrams](https://www.rfc-editor.org/rfc/rfc9297#section-2.1.1).
+Keep the cache, TLS-event and raw-wire regressions when updating upstream;
+`settings_0rtt.go` separately retains the server's encrypted-ticket checks.
+
 The former pooled sorter has been removed. The shared stateless sorter preserves
 its observable order without cached mutable state or a global lock.
 
@@ -219,3 +246,18 @@ in Surf, not this generic hook. The patch is limited to `wire_config.go` and the
 response loop in `client.go`; `response_headers_test.go` exercises real QUIC
 streams, ordering and cancellation. The adjacent trace call now propagates
 `Got1xxResponse` errors as required by the existing httptrace contract.
+
+## Same-connection early-data restart
+
+`Transport.EarlyDataRestart` wraps pooled clients with successive HTTP/3
+protocol generations of one QUIC connection. Synchronous rejection retires the
+old control/QPACK workers; verified application readiness installs the fresh
+state exactly once. Pending requests restart only after rejection, honoring
+cancellation and body replayability. Unconsumed bodies can be reused; consumed
+bodies need `GetBody`. Explicit low-level client connections keep their existing
+application-controlled behavior. The generic default remains disabled.
+
+The narrow engine hooks and HTTP/3 generation cancellation are kept separate
+from Firefox profile policy. Regressions cover same-connection wire operation,
+unknown tickets, HRR, changed SETTINGS, parallel methods, cancellation, TLS
+verification failure, explicit opt-out and consumed-body replay limits.

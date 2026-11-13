@@ -41,8 +41,8 @@ func (c *rawConn) configureQPACK(settings g.MapOrd[uint64, uint64]) {
 			select {
 			case feedback <- data:
 				return nil
-			case <-c.conn.Context().Done():
-				return context.Cause(c.conn.Context())
+			case <-c.context().Done():
+				return context.Cause(c.context())
 			default:
 				return errQPACKFeedbackBacklog
 			}
@@ -50,20 +50,20 @@ func (c *rawConn) configureQPACK(settings g.MapOrd[uint64, uint64]) {
 		go c.writeQPACKFeedback(feedback)
 	}
 	c.qpackDecoder = dynamic.NewDecoder(capacity, blocked, emit)
-	context.AfterFunc(c.conn.Context(), func() { c.qpackDecoder.Close(context.Cause(c.conn.Context())) })
+	context.AfterFunc(c.context(), func() { c.qpackDecoder.Close(context.Cause(c.context())) })
 }
 func (c *rawConn) writeQPACKFeedback(feedback <-chan []byte) {
 	var stream *quic.SendStream
 	for {
 		var data []byte
 		select {
-		case <-c.conn.Context().Done():
+		case <-c.context().Done():
 			return
 		case data = <-feedback:
 		}
 		if stream == nil {
 			var err error
-			stream, err = c.conn.OpenUniStreamSync(c.conn.Context())
+			stream, err = c.conn.OpenUniStreamSync(c.context())
 			if err != nil {
 				return
 			}
@@ -89,7 +89,7 @@ func (c *rawConn) handleQPACKStream(stream *quic.ReceiveStream, encoder bool) {
 	} else {
 		err = dynamic.ReadDecoder(stream)
 	}
-	if c.conn.Context().Err() != nil {
+	if c.context().Err() != nil {
 		return
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
@@ -170,10 +170,10 @@ func (c *rawConn) qpackCancellation(id quic.StreamID) func() {
 		return nil
 	}
 	return sync.OnceFunc(func() {
-		if c.conn.Context().Err() != nil {
+		if c.context().Err() != nil {
 			return
 		}
-		if err := c.qpackDecoder.Cancel(uint64(id)); err != nil && c.conn.Context().Err() == nil {
+		if err := c.qpackDecoder.Cancel(uint64(id)); err != nil && c.context().Err() == nil {
 			c.CloseWithError(quic.ApplicationErrorCode(ErrCodeExcessiveLoad), err.Error())
 		}
 	})

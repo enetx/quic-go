@@ -20,7 +20,7 @@ func (c *ClientConn) startInitialSettings(datagrams bool, settings g.MapOrd[uint
 				c.logger.Debug("setting up connection failed", "error", err)
 			}
 			// A synchronous CloseWithError would wait on the send loop invoking us.
-			go c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeInternalError), "setting up HTTP/3 control stream failed")
+			go c.rawConn.CloseWithError(quic.ApplicationErrorCode(ErrCodeInternalError), "setting up HTTP/3 control stream failed")
 		}
 	}
 	if err := c.wireConfig.Validate(); err != nil {

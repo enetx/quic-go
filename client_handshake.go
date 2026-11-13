@@ -3,6 +3,7 @@ package quic
 import (
 	"crypto/rand"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -32,6 +33,11 @@ type ClientHandshake struct {
 	// OnEarlyDataRejected observes a client's TLS 0-RTT rejection. It runs on
 	// the connection loop; callbacks must return promptly and not reenter it.
 	OnEarlyDataRejected func(*Conn)
+	// ResetStreamsOnEarlyDataRejection makes the fresh 1-RTT stream maps
+	// available before OnApplicationReady after verified TLS and final transport
+	// parameters. The application must recreate all rejected protocol state.
+	// False retains the explicit NextConnection transition.
+	ResetStreamsOnEarlyDataRejection bool
 	// InitialPTOMultiplier scales the initial estimate before any measurement.
 	// Zero retains the native factor of two. Positive values are 1..16.
 	InitialPTOMultiplier uint32
@@ -141,10 +147,77 @@ type ClientHandshake struct {
 	// preparation. The callback runs in the send loop and must not block or
 	// reenter the connection. See InitialCryptoLayoutInfo for validation rules.
 	InitialCryptoLayout func(InitialCryptoLayoutInfo) [][]CryptoRange
+	// InitialCryptoRecovery enables byte-range recovery and late-ACK retirement
+	// for client Initial CRYPTO. Nil policies below select sequential lost ranges.
+	InitialCryptoRecovery bool
+	// InitialCryptoRecoveryLayout re-packetizes lost Initial bytes against live
+	// budgets. Length may include later Initial messages; offsets remain absolute.
+	// It requires InitialCryptoRecovery and follows InitialCryptoLayout validation.
+	// It runs in the send loop and must not block or reenter the connection.
+	InitialCryptoRecoveryLayout func(InitialCryptoLayoutInfo) [][]CryptoRange
+	// InitialCryptoProbePackets selects the Initial PTO allowance and preparation
+	// batch. Zero keeps native allowance and a one-packet batch; maximum is two
+	// datagrams as specified by RFC 9002, Section 6.2.4.
+	InitialCryptoProbePackets uint8
+	// InitialProbeSkipPacketNumber skips one number on an Initial PTO to solicit
+	// an immediate peer ACK. The skipped-number ACK defense remains enforced.
+	InitialProbeSkipPacketNumber bool
+	// InitialCryptoResendOnPeerProbe reschedules sent, unacknowledged Initial
+	// bytes on a peer PING or a CRYPTO frame that delivers no new TLS bytes.
+	InitialCryptoResendOnPeerProbe bool
+	// HandshakeCryptoRecovery tracks Handshake CRYPTO byte ranges and retains
+	// original PTO packet acknowledgments. Initial recovery is independent.
+	HandshakeCryptoRecovery bool
+	// StreamDataRecovery retires STREAM ranges acknowledged in any transmission
+	// and preserves original PTO callbacks. Disabled retains native frame recovery.
+	StreamDataRecovery bool
+	// StreamLossRetention selects how long lost STREAM packet ACK metadata remains
+	// useful. Nil keeps it until its data is acknowledged or tracking reaches the
+	// engine's packet limit. The callback runs in the send loop and must not block.
+	StreamLossRetention func(StreamLossInfo) bool
+	// HandshakeCryptoResendOnPeerProbe reschedules unacknowledged Handshake
+	// CRYPTO on PING or non-progressing CRYPTO, including duplicate Initial input.
+	HandshakeCryptoResendOnPeerProbe bool
+	// HandshakeProbePackets overrides the Handshake PTO allowance (0..2).
+	// Zero preserves the engine's native allowance.
+	HandshakeProbePackets uint8
+	// ApplicationProbePackets overrides the Application Data PTO allowance
+	// (0..2). Zero preserves the engine's native allowance.
+	ApplicationProbePackets uint8
+	// CoalescePTOProbes shares a datagram budget across timed packet-number
+	// spaces, including retained crypto timer baselines and available 0-RTT data.
+	CoalescePTOProbes bool
+	// InitialACKResetsPTO resets PTO backoff on a new Initial ACK, independently
+	// of peer address validation. False retains native RFC recovery behavior.
+	InitialACKResetsPTO bool
+	// HandshakeProbeSkipPacketNumber skips one Handshake number on PTO.
+	HandshakeProbeSkipPacketNumber bool
+	// ApplicationProbeSkipPacketNumber independently controls the Application
+	// PTO gap. Nil retains DisablePacketNumberSkipping's native authority.
+	ApplicationProbeSkipPacketNumber *bool
+	// HandshakeProbeOnlyWithData suppresses empty follow-up Handshake probes
+	// after the first PTO packet. Queued CRYPTO still uses the full allowance.
+	HandshakeProbeOnlyWithData bool
+	// PeerPacketRecoveryPolicy selects responses to routed packets whose keys
+	// are unavailable. Nil preserves native behavior. Authentication failures
+	// never invoke it. The callback runs in the send loop and must not block.
+	PeerPacketRecoveryPolicy func(PeerPacketInfo) PeerPacketRecovery
+	// EarlyDataResendOnPeerCrypto reschedules outstanding early-data packets on
+	// authenticated Initial CRYPTO that does not advance TLS. It stops after
+	// the first Application ACK and never treats a PING as an early-data hint.
+	EarlyDataResendOnPeerCrypto bool
+	// ImmediateACKOnPeerPing acknowledges an authenticated 1-RTT PING without
+	// waiting for the normal ACK threshold. Initial/Handshake already ACK at once.
+	ImmediateACKOnPeerPing bool
 
 	StreamReceiveWindows *StreamReceiveWindows
 	TransportParameters  *transportparams.Layout
 	NewTLSClient         tlsquic.NewClient
+	// WrapTLSClient decorates the selected TLS factory for one connection. The
+	// supplied factory is non-nil and receives the normalized private TLS config.
+	// The decorator runs before TLS starts and must not perform network I/O.
+	// Nil preserves the selected native or application-provided factory.
+	WrapTLSClient func(*Conn, tlsquic.NewClient) tlsquic.NewClient
 	// MaxDatagramFrameSize overrides the advertised limit when datagrams are
 	// enabled. Zero preserves upstream; values must fit a QUIC integer.
 	MaxDatagramFrameSize uint64
@@ -156,7 +229,8 @@ type ClientHandshake struct {
 	// independently of Initial. 0-RTT and 1-RTT share Application Data.
 	SeparatePacketNumberSpaces bool
 	// DisablePacketNumberSkipping suppresses artificial Application Data gaps,
-	// including PTO skips. The native skipped-ACK defense remains the default.
+	// including PTO skips unless ApplicationProbeSkipPacketNumber overrides them.
+	// The native skipped-ACK defense remains the default.
 	DisablePacketNumberSkipping bool
 }
 
@@ -166,6 +240,10 @@ func (h *ClientHandshake) Clone() *ClientHandshake {
 		return nil
 	}
 	c := *h
+	if h.ApplicationProbeSkipPacketNumber != nil {
+		value := *h.ApplicationProbeSkipPacketNumber
+		c.ApplicationProbeSkipPacketNumber = &value
+	}
 	if h.Pacing != nil {
 		p := *h.Pacing
 		c.Pacing = &p
@@ -191,6 +269,15 @@ func (h *ClientHandshake) Validate() error {
 	}
 	if h.InitialPTOMultiplier > 16 {
 		return fmt.Errorf("initial PTO multiplier must be between 1 and 16, or zero")
+	}
+	if h.InitialCryptoProbePackets > 2 || !h.InitialCryptoRecovery && (h.InitialCryptoRecoveryLayout != nil || h.InitialCryptoProbePackets != 0 || h.InitialCryptoResendOnPeerProbe) {
+		return errors.New("Initial CRYPTO recovery must be enabled and its probe packet count must be at most two")
+	}
+	if h.HandshakeProbePackets > 2 || h.ApplicationProbePackets > 2 {
+		return errors.New("Handshake and Application PTO probe packet counts must be at most two")
+	}
+	if h.HandshakeCryptoResendOnPeerProbe && !h.HandshakeCryptoRecovery {
+		return errors.New("Handshake CRYPTO recovery must be enabled for peer-probe retransmission")
 	}
 	if h.InitialRTT < 0 || h.InitialRTT > time.Duration((1<<63-1)/16) {
 		return fmt.Errorf("initial RTT must be nonnegative and fit probe timeout scaling")
@@ -302,11 +389,25 @@ func (c *Config) validateClientHandshake() error {
 	}
 	return nil
 }
-func (c *Config) clientTLSFactory() tlsquic.NewClient {
+func (c *Config) clientTLSFactory(conn *Conn) tlsquic.NewClient {
 	if c.ClientHandshake == nil {
 		return nil
 	}
-	return c.ClientHandshake.NewTLSClient
+	factory := c.ClientHandshake.NewTLSClient
+	if wrap := c.ClientHandshake.WrapTLSClient; wrap != nil {
+		if factory == nil {
+			factory = func(config *tls.Config) (tlsquic.Conn, error) {
+				return tls.QUICClient(&tls.QUICConfig{TLSConfig: config, EnableSessionEvents: true}), nil
+			}
+		}
+		factory = wrap(conn, factory)
+		if factory == nil {
+			return func(*tls.Config) (tlsquic.Conn, error) {
+				return nil, errors.New("QUIC TLS factory decorator returned nil")
+			}
+		}
+	}
+	return factory
 }
 
 func (c *Config) clientSendConfig() ackhandler.ClientSendConfig {
@@ -321,9 +422,21 @@ func (c *Config) clientSendConfig() ackhandler.ClientSendConfig {
 			Pacing: h.Pacing, PRR: h.ProportionalRateReduction, RecoveryBurstPackets: h.RecoveryBurstPackets,
 			SegmentSize: h.CongestionControlSegmentSize, Connections: h.CongestionControlConnections,
 		},
-		PersistentCongestionThreshold: h.PersistentCongestionThreshold,
-		SeparatePacketNumberSpaces:    h.SeparatePacketNumberSpaces,
-		DisablePacketNumberSkipping:   h.DisablePacketNumberSkipping,
+		PersistentCongestionThreshold:    h.PersistentCongestionThreshold,
+		SeparatePacketNumberSpaces:       h.SeparatePacketNumberSpaces,
+		DisablePacketNumberSkipping:      h.DisablePacketNumberSkipping,
+		CoalescePTOProbes:                h.CoalescePTOProbes,
+		InitialACKResetsPTO:              h.InitialACKResetsPTO,
+		StreamDataRecovery:               h.StreamDataRecovery,
+		StreamLossRetention:              h.StreamLossRetention,
+		RetainInitialCryptoProbes:        h.InitialCryptoRecovery,
+		InitialProbePackets:              h.InitialCryptoProbePackets,
+		InitialProbeSkipPacketNumber:     h.InitialProbeSkipPacketNumber,
+		RetainHandshakeCryptoProbes:      h.HandshakeCryptoRecovery,
+		HandshakeProbePackets:            h.HandshakeProbePackets,
+		ApplicationProbePackets:          h.ApplicationProbePackets,
+		HandshakeProbeSkipPacketNumber:   h.HandshakeProbeSkipPacketNumber,
+		ApplicationProbeSkipPacketNumber: h.ApplicationProbeSkipPacketNumber,
 	}
 }
 
@@ -413,7 +526,7 @@ func (c *Config) initialPacketNumber() (protocol.PacketNumber, error) {
 	return protocol.PacketNumber(value), nil
 }
 
-func (c *Conn) configureInitialCryptoStream() {
+func (c *Conn) configureClientCryptoStreams() {
 	if c.perspective == protocol.PerspectiveClient && c.config.ClientHandshake != nil && c.config.ClientHandshake.DisableClientHelloScrambling {
 		c.initialStream.scramble = false
 	}
@@ -423,7 +536,23 @@ func (c *Conn) configureInitialCryptoStream() {
 	}
 	if h := c.config.ClientHandshake; c.perspective == protocol.PerspectiveClient && h != nil {
 		c.initialStream.layout = h.InitialCryptoLayout
+		if h.InitialCryptoRecovery {
+			c.initialStream.recovery = &cryptoRangeRecovery{layout: h.InitialCryptoRecoveryLayout, probePackets: max(h.InitialCryptoProbePackets, 1), peerProbe: h.InitialCryptoResendOnPeerProbe}
+		}
+		if h.HandshakeCryptoRecovery {
+			c.handshakeStream.recovery = &cryptoRangeRecovery{probePackets: max(h.HandshakeProbePackets, 1), peerProbe: h.HandshakeCryptoResendOnPeerProbe}
+		}
 	}
+}
+
+func (c *Conn) cryptoRecovery(level protocol.EncryptionLevel) *cryptoRangeRecovery {
+	if level == protocol.EncryptionInitial && c.initialStream != nil {
+		return c.initialStream.recovery
+	}
+	if level == protocol.EncryptionHandshake && c.handshakeStream != nil {
+		return c.handshakeStream.recovery
+	}
+	return nil
 }
 
 func (c *Conn) configureClientPacketPacker() {
@@ -487,5 +616,5 @@ func (c *Conn) configureClientHandshake(params *wire.TransportParameters) tlsqui
 			return func(*tls.Config) (tlsquic.Conn, error) { return nil, err }
 		}
 	}
-	return c.config.clientTLSFactory()
+	return c.config.clientTLSFactory(c)
 }

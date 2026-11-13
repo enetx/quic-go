@@ -138,6 +138,7 @@ func newClientConnWithWire(
 		qlogger,
 		c.logger,
 	)
+	c.requestWriter.peerMaxFieldSectionSize = c.rawConn.peerFieldSectionLimit
 	if len(qpackConfig) > 0 && qpackConfig[0] != nil {
 		c.rawConn.clientQPACK = newClientQPACK(c.rawConn, qpackConfig[0], c.initialSettingsWritten,
 			qpackFeedbackQueueSize(additionalSettings.Get(1).UnwrapOrDefault(), additionalSettings.Get(7).UnwrapOrDefault()))
@@ -179,13 +180,21 @@ func (c *ClientConn) openRequestStream(
 		return nil, errGoAway
 	}
 
-	openCtx, cancel := context.WithCancelCause(ctx)
+	openCtx, cancel := context.WithCancelCause(c.rawConn.context())
+	stopRequest := context.AfterFunc(ctx, func() { cancel(context.Cause(ctx)) })
+	defer stopRequest()
+	if ctx.Err() != nil {
+		cancel(context.Cause(ctx))
+	}
 	// A request blocked in OpenStreamSync has no request stream yet, so it is not in flight.
 	stop := context.AfterFunc(c.goAwayCtx, func() { cancel(errGoAway) })
 	str, err := c.conn.OpenStreamSync(openCtx)
 	stop()
 	cancel(nil)
 	if err != nil {
+		if errors.Is(context.Cause(c.rawConn.context()), quic.Err0RTTRejected) {
+			return nil, quic.Err0RTTRejected
+		}
 		if context.Cause(openCtx) == errGoAway {
 			return nil, errGoAway
 		}
@@ -240,15 +249,15 @@ func (c *ClientConn) handleControlStream(str *quic.ReceiveStream, fp *frameParse
 		f, err := fp.ParseNext(c.qlogger)
 		if err != nil {
 			if errors.Is(err, errPriorityUpdateForPush) {
-				c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeFrameUnexpected), "")
+				c.rawConn.CloseWithError(quic.ApplicationErrorCode(ErrCodeFrameUnexpected), "")
 				return
 			}
 			_, isStreamError := errors.AsType[*quic.StreamError](err)
 			if err == io.EOF || isStreamError {
-				c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "")
+				c.rawConn.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "")
 				return
 			}
-			c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeFrameError), "")
+			c.rawConn.CloseWithError(quic.ApplicationErrorCode(ErrCodeFrameError), "")
 			return
 		}
 		// GOAWAY is the only frame allowed at this point:
@@ -256,18 +265,18 @@ func (c *ClientConn) handleControlStream(str *quic.ReceiveStream, fp *frameParse
 		// * we don't support any extension that might add support for more frames
 		goaway, ok := f.(*goAwayFrame)
 		if !ok {
-			c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeFrameUnexpected), "")
+			c.rawConn.CloseWithError(quic.ApplicationErrorCode(ErrCodeFrameUnexpected), "")
 			return
 		}
 		if goaway.StreamID%4 != 0 { // client-initiated, bidirectional streams
-			c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeIDError), "")
+			c.rawConn.CloseWithError(quic.ApplicationErrorCode(ErrCodeIDError), "")
 			return
 		}
 		c.streamMx.Lock()
 		// the server is not allowed to increase the Stream ID in subsequent GOAWAY frames
 		if c.maxStreamID != invalidStreamID && goaway.StreamID > c.maxStreamID {
 			c.streamMx.Unlock()
-			c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeIDError), "")
+			c.rawConn.CloseWithError(quic.ApplicationErrorCode(ErrCodeIDError), "")
 			return
 		}
 		c.maxStreamID = goaway.StreamID
@@ -289,7 +298,7 @@ func (c *ClientConn) onStreamsEmpty() {
 
 	// The server is performing a graceful shutdown.
 	if c.maxStreamID != invalidStreamID {
-		c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeNoError), "")
+		c.rawConn.CloseWithError(quic.ApplicationErrorCode(ErrCodeNoError), "")
 	}
 }
 
@@ -328,11 +337,14 @@ func (c *ClientConn) roundTrip(req *http.Request) (*http.Response, error) {
 	// It is only possible to send an Extended CONNECT request once the SETTINGS were received.
 	// See section 3 of RFC 8441.
 	if isExtendedConnectRequest(req) {
-		connCtx := c.conn.Context()
+		connCtx := c.rawConn.context()
 		// wait for the server's SETTINGS frame to arrive
 		select {
 		case <-c.rawConn.ReceivedSettings():
 		case <-connCtx.Done():
+			if errors.Is(context.Cause(connCtx), quic.Err0RTTRejected) {
+				return nil, &errConnUnusable{e: quic.Err0RTTRejected}
+			}
 			return nil, context.Cause(connCtx)
 		case <-req.Context().Done():
 			return nil, req.Context().Err()

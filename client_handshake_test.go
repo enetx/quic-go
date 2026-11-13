@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"crypto/tls"
 	"errors"
 	"testing"
 	"time"
@@ -8,9 +9,45 @@ import (
 	"github.com/enetx/quic-go/internal/protocol"
 	"github.com/enetx/quic-go/internal/wire"
 	"github.com/enetx/quic-go/quicvarint"
+	"github.com/enetx/quic-go/tlsquic"
 	"github.com/enetx/quic-go/transportparams"
 	"github.com/stretchr/testify/require"
 )
+
+func TestClientTLSFactoryDecorator(t *testing.T) {
+	for _, custom := range []bool{false, true} {
+		t.Run(map[bool]string{false: "native", true: "custom"}[custom], func(t *testing.T) {
+			conn := new(Conn)
+			config := &Config{ClientHandshake: &ClientHandshake{}}
+			var originalConfig *tls.Config
+			if custom {
+				config.ClientHandshake.NewTLSClient = func(c *tls.Config) (tlsquic.Conn, error) {
+					originalConfig = c
+					return tls.QUICClient(&tls.QUICConfig{TLSConfig: c, EnableSessionEvents: true}), nil
+				}
+			}
+			var wrapped bool
+			config.ClientHandshake.WrapTLSClient = func(got *Conn, factory tlsquic.NewClient) tlsquic.NewClient {
+				require.Same(t, conn, got)
+				require.NotNil(t, factory)
+				return func(c *tls.Config) (tlsquic.Conn, error) { wrapped = true; return factory(c) }
+			}
+			tlsConfig := &tls.Config{ServerName: "example.com", NextProtos: []string{"h3"}}
+			provider, err := config.Clone().clientTLSFactory(conn)(tlsConfig)
+			require.NoError(t, err)
+			require.NotNil(t, provider)
+			require.True(t, wrapped)
+			if custom {
+				require.Same(t, tlsConfig, originalConfig)
+			}
+			require.NoError(t, provider.Close())
+		})
+	}
+	require.Nil(t, (&Config{}).clientTLSFactory(new(Conn)))
+	config := &Config{ClientHandshake: &ClientHandshake{WrapTLSClient: func(*Conn, tlsquic.NewClient) tlsquic.NewClient { return nil }}}
+	_, err := config.clientTLSFactory(new(Conn))(&tls.Config{})
+	require.ErrorContains(t, err, "decorator returned nil")
+}
 
 func TestClientHandshakeStreamWindows(t *testing.T) {
 	config := populateConfig(&Config{MaxStreamReceiveWindow: 1000, ClientHandshake: &ClientHandshake{StreamReceiveWindows: &StreamReceiveWindows{BidiLocal: 900, BidiRemote: 300, Uni: 0}, MaxDatagramFrameSize: 1200, TransportParameters: &transportparams.Layout{Order: []uint64{15, 5, 6, 7}}}})

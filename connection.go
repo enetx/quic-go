@@ -207,6 +207,7 @@ type Conn struct {
 	droppedInitialKeys bool
 	handshakeComplete  bool
 	handshakeConfirmed bool
+	earlyDataRejected  bool
 
 	receivedRetry       bool
 	versionNegotiated   bool
@@ -540,10 +541,12 @@ var newClientConnection = func(
 func (c *Conn) preSetup(r *pathReceiver) {
 	c.largestRcvdAppData = protocol.InvalidPacketNumber
 	c.initialStream = newInitialCryptoStream(c.perspective == protocol.PerspectiveClient)
-	c.configureInitialCryptoStream()
 	c.handshakeStream = newCryptoStream()
+	c.configureClientCryptoStreams()
 	c.sendQueue = newSendQueue(c.conn)
 	c.retransmissionQueue = newRetransmissionQueue()
+	c.retransmissionQueue.initialRecovery = c.initialStream.recovery
+	c.retransmissionQueue.handshakeRecovery = c.handshakeStream.recovery
 	c.frameParser = *wire.NewFrameParser(
 		c.config.EnableDatagrams,
 		c.config.EnableStreamResetPartialDelivery,
@@ -566,9 +569,13 @@ func (c *Conn) preSetup(r *pathReceiver) {
 		c.connFlowController.updateDivisor = c.config.ClientHandshake.ReceiveWindowUpdateDivisor
 	}
 	c.earlyConnReadyChan = make(chan struct{})
+	var sender streamSender = c
+	if h := c.config.ClientHandshake; c.perspective == protocol.PerspectiveClient && h != nil && h.ResetStreamsOnEarlyDataRejection {
+		sender = &streamEpochSender{streamSender: c}
+	}
 	c.streamsMap = newStreamsMap(
 		c.ctx,
-		c,
+		sender,
 		c.queueControlFrame,
 		c.newFlowController,
 		uint64(c.config.MaxIncomingStreams),
@@ -576,6 +583,9 @@ func (c *Conn) preSetup(r *pathReceiver) {
 		c.config.RequireStreamCreditRelease,
 		c.perspective,
 	)
+	if h := c.config.ClientHandshake; c.perspective == protocol.PerspectiveClient && h != nil {
+		c.streamsMap.streamDataRecovery = h.StreamDataRecovery
+	}
 	c.framer = newFramer(c.connFlowController)
 	c.receivedPackets.Init(r)
 	c.notifyReceivedPacket = make(chan struct{}, 1)
@@ -717,6 +727,7 @@ runLoop:
 				c.setCloseError(&closeError{err: err})
 				break runLoop
 			}
+			c.primePTOHandshake(now)
 		}
 
 		if keepAliveTime := c.nextKeepAliveTime(); !keepAliveTime.IsZero() && !now.Before(keepAliveTime) {
@@ -1007,6 +1018,9 @@ func (c *Conn) handleHandshakeComplete(now monotime.Time) error {
 	// During a 0-RTT connection, the client is only allowed to use the new transport parameters for 1-RTT packets.
 	if c.perspective == protocol.PerspectiveClient {
 		c.applyTransportParameters()
+		if h := c.config.ClientHandshake; h != nil && h.ResetStreamsOnEarlyDataRejection && c.earlyDataRejected {
+			c.streamsMap.UseResetMaps()
+		}
 		if h := c.config.ClientHandshake; h != nil && h.OnApplicationReady != nil {
 			h.OnApplicationReady(c)
 		}
@@ -1480,6 +1494,7 @@ func (c *Conn) handleLongHeaderPacket(p receivedPacket, hdr *wire.Header, datagr
 }
 
 func (c *Conn) handleUnpackError(err error, p receivedPacket, pt qlog.PacketType, datagramPayloadChecksum qlog.DatagramPayloadChecksum) (wasQueued bool, _ error) {
+	c.recoverFromUnpackError(err, pt)
 	switch err {
 	case handshake.ErrKeysDropped:
 		if c.qlogger != nil {
@@ -2038,6 +2053,12 @@ func (c *Conn) handleFrame(
 	case *wire.LegacyAckFrequencyFrame:
 		err = c.receivedPacketHandler.HandleLegacyAckFrequency(frame)
 	case *wire.PingFrame:
+		if c.perspective == protocol.PerspectiveClient && encLevel == protocol.Encryption1RTT && c.config.ClientHandshake != nil && c.config.ClientHandshake.ImmediateACKOnPeerPing {
+			c.receivedPacketHandler.QueueImmediateACK()
+		}
+		if r := c.cryptoRecovery(encLevel); r != nil {
+			r.resendUnacked()
+		}
 	case *wire.PathChallengeFrame:
 		pathChallenge = frame
 	case *wire.PathResponseFrame:
@@ -2107,6 +2128,7 @@ func (c *Conn) handleCryptoFrame(frame *wire.CryptoFrame, encLevel protocol.Encr
 	if err := c.cryptoStreamManager.HandleCryptoFrame(frame, encLevel); err != nil {
 		return err
 	}
+	progress := false
 	for {
 		data := c.cryptoStreamManager.GetCryptoData(encLevel)
 		if data == nil {
@@ -2114,6 +2136,18 @@ func (c *Conn) handleCryptoFrame(frame *wire.CryptoFrame, encLevel protocol.Encr
 		}
 		if err := c.cryptoStreamHandler.HandleMessage(data, encLevel); err != nil {
 			return err
+		}
+		progress = true
+	}
+	if !progress {
+		if r := c.cryptoRecovery(encLevel); r != nil {
+			r.resendUnacked()
+		}
+		if encLevel == protocol.EncryptionInitial && c.handshakeStream != nil && c.handshakeStream.recovery != nil {
+			c.handshakeStream.recovery.resendUnacked()
+		}
+		if encLevel == protocol.EncryptionInitial && c.config != nil && c.config.ClientHandshake != nil && c.config.ClientHandshake.EarlyDataResendOnPeerCrypto {
+			c.resendEarlyData(rcvTime)
 		}
 	}
 	return c.handleHandshakeEvents(rcvTime)
@@ -2152,6 +2186,7 @@ func (c *Conn) handleHandshakeEvents(now monotime.Time) error {
 			c.undecryptablePacketsToProcess = append(c.undecryptablePacketsToProcess, c.undecryptablePackets...)
 			c.undecryptablePackets = nil
 		case handshake.EventDiscard0RTTKeys:
+			c.earlyDataRejected = true
 			if c.perspective == protocol.PerspectiveClient {
 				if h := c.config.ClientHandshake; h != nil && h.OnEarlyDataRejected != nil {
 					h.OnEarlyDataRejected(c)
@@ -2840,6 +2875,9 @@ func (c *Conn) maybeSendAckOnlyPacket(now monotime.Time) error {
 }
 
 func (c *Conn) sendProbePacket(sendMode ackhandler.SendMode, now monotime.Time) error {
+	if handled, err := c.sendCoalescedPTOProbe(now); handled {
+		return err
+	}
 	var encLevel protocol.EncryptionLevel
 	//nolint:exhaustive // We only need to handle the PTO send modes here.
 	switch sendMode {
@@ -2855,6 +2893,20 @@ func (c *Conn) sendProbePacket(sendMode ackhandler.SendMode, now monotime.Time) 
 	// Queue probe packets until we actually send out a packet,
 	// or until there are no more packets to queue.
 	var packet *coalescedPacket
+	if r := c.cryptoRecovery(encLevel); r != nil {
+		if len(r.pending) == 0 {
+			for range r.probePackets {
+				if !c.sentPacketHandler.QueueProbePacket(encLevel.PacketNumberSpace()) {
+					break
+				}
+			}
+		}
+		var err error
+		packet, err = c.packer.PackPTOProbePacket(encLevel, c.maxPacketSize(), false, now, c.version)
+		if err != nil {
+			return err
+		}
+	}
 	for packet == nil {
 		if wasQueued := c.sentPacketHandler.QueueProbePacket(encLevel.PacketNumberSpace()); !wasQueued {
 			break
@@ -2866,6 +2918,9 @@ func (c *Conn) sendProbePacket(sendMode ackhandler.SendMode, now monotime.Time) 
 		}
 	}
 	if packet == nil {
+		if c.perspective == protocol.PerspectiveClient && encLevel == protocol.EncryptionHandshake && c.config.ClientHandshake != nil && c.config.ClientHandshake.HandshakeProbeOnlyWithData && ackhandler.SkipEmptyHandshakeProbe(c.sentPacketHandler) {
+			return nil
+		}
 		var err error
 		packet, err = c.packer.PackPTOProbePacket(encLevel, c.maxPacketSize(), true, now, c.version)
 		if err != nil {

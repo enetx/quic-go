@@ -62,6 +62,13 @@ func (h *ReceivedPacketHandler) IgnorePacketsBelow(pn protocol.PacketNumber) {
 	h.appDataPackets.IgnoreBelow(pn)
 }
 
+// QueueImmediateACK makes the current authenticated application packet eligible
+// for immediate ACK. ReceivedPacket still inserts and validates its number.
+func (h *ReceivedPacketHandler) QueueImmediateACK() {
+	h.appDataPackets.ackQueued = true
+	h.appDataPackets.ackAlarm = 0
+}
+
 func (h *ReceivedPacketHandler) DropPackets(encLevel protocol.EncryptionLevel) {
 	//nolint:exhaustive // 1-RTT packet number space is never dropped.
 	switch encLevel {

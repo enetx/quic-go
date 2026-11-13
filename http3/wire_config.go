@@ -158,8 +158,8 @@ func (w *clientControlWriter) enqueue(data []byte) error {
 
 func (w *clientControlWriter) enqueueWrite(data controlWrite) error {
 	select {
-	case <-w.owner.conn.Context().Done():
-		return context.Cause(w.owner.conn.Context())
+	case <-w.owner.context().Done():
+		return context.Cause(w.owner.context())
 	default:
 	}
 	w.pending.Add(1)
@@ -193,7 +193,7 @@ func (w *clientControlWriter) run(stream *quic.SendStream) {
 			err = io.ErrShortWrite
 		}
 		if err != nil {
-			w.owner.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "control stream write failed")
+			w.owner.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "control stream write failed")
 			return false
 		}
 		return true
@@ -207,10 +207,10 @@ func (w *clientControlWriter) run(stream *quic.SendStream) {
 	}
 	for {
 		select {
-		case <-w.owner.conn.Context().Done():
+		case <-w.owner.context().Done():
 			return
 		case <-stream.Context().Done():
-			w.owner.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "control stream closed")
+			w.owner.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "control stream closed")
 			return
 		case data := <-w.queue:
 			ok := write(data.data, data.recorded)

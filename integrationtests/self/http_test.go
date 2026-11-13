@@ -323,30 +323,10 @@ func testHTTPHeaderSizeLimitServer(t *testing.T, hdr http.Header, limit int) (he
 	})
 	port := startHTTPServer(t, mux, func(s *http3.Server) { s.MaxHeaderBytes = limit })
 
-	var eventRecorder events.Recorder
-	cl := newHTTP3Client(t, func(tr *http3.Transport) {
-		tr.QUICConfig = getQuicConfig(&quic.Config{
-			MaxIdleTimeout: 10 * time.Second,
-			Tracer:         newTracer(&eventRecorder),
-		})
-	})
-
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://localhost:%d/headers", port), nil)
-	require.NoError(t, err)
-	req.Header = hdr
-
-	resp, err := cl.Do(req)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusRequestHeaderFieldsTooLarge, resp.StatusCode)
+	// A conforming client now enforces SETTINGS_MAX_FIELD_SECTION_SIZE before
+	// encoding. Deliberately send raw HEADERS to retain the server-side check.
+	headersFrameSize = sendUncheckedHTTP3Headers(t, port, hdr)
 	require.False(t, handlerCalled)
-
-	for _, ev := range eventRecorder.Events(qlog.FrameCreated{}) {
-		fc := ev.(qlog.FrameCreated)
-		if _, ok := fc.Frame.Frame.(qlog.HeadersFrame); ok {
-			headersFrameSize = fc.Raw.Length
-			break
-		}
-	}
 	return headersFrameSize
 }
 

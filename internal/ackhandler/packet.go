@@ -27,6 +27,7 @@ type packet struct {
 
 	includedInBytesInFlight bool
 	isPathProbePacket       bool
+	probeQueued             bool
 }
 
 func (p *packet) Outstanding() bool {
@@ -51,6 +52,7 @@ func getPacket() *packet {
 	p.IsPathMTUProbePacket = false
 	p.includedInBytesInFlight = false
 	p.isPathProbePacket = false
+	p.probeQueued = false
 	return p
 }
 

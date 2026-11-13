@@ -15,9 +15,11 @@ type framesToRetransmit struct {
 }
 
 type retransmissionQueue struct {
-	initial   *framesToRetransmit
-	handshake *framesToRetransmit
-	appData   framesToRetransmit
+	initialRecovery   *cryptoRangeRecovery
+	handshakeRecovery *cryptoRangeRecovery
+	initial           *framesToRetransmit
+	handshake         *framesToRetransmit
+	appData           framesToRetransmit
 }
 
 func newRetransmissionQueue() *retransmissionQueue {
@@ -32,6 +34,10 @@ func (q *retransmissionQueue) addInitial(f wire.Frame) {
 		return
 	}
 	if cf, ok := f.(*wire.CryptoFrame); ok {
+		if q.initialRecovery != nil {
+			q.initialRecovery.OnLost(cf)
+			return
+		}
 		q.initial.crypto = append(q.initial.crypto, cf)
 		return
 	}
@@ -43,6 +49,10 @@ func (q *retransmissionQueue) addHandshake(f wire.Frame) {
 		return
 	}
 	if cf, ok := f.(*wire.CryptoFrame); ok {
+		if q.handshakeRecovery != nil {
+			q.handshakeRecovery.OnLost(cf)
+			return
+		}
 		q.handshake.crypto = append(q.handshake.crypto, cf)
 		return
 	}
@@ -65,10 +75,10 @@ func (q *retransmissionQueue) HasData(encLevel protocol.EncryptionLevel) bool {
 	switch encLevel {
 	case protocol.EncryptionInitial:
 		return q.initial != nil &&
-			(len(q.initial.crypto) > 0 || len(q.initial.other) > 0)
+			(len(q.initial.crypto) > 0 || len(q.initial.other) > 0 || q.initialRecovery != nil && len(q.initialRecovery.pending) > 0)
 	case protocol.EncryptionHandshake:
 		return q.handshake != nil &&
-			(len(q.handshake.crypto) > 0 || len(q.handshake.other) > 0)
+			(len(q.handshake.crypto) > 0 || len(q.handshake.other) > 0 || q.handshakeRecovery != nil && len(q.handshakeRecovery.pending) > 0)
 	case protocol.Encryption1RTT:
 		return len(q.appData.crypto) > 0 || len(q.appData.other) > 0
 	}
@@ -88,6 +98,14 @@ func (q *retransmissionQueue) GetFrame(encLevel protocol.EncryptionLevel, maxLen
 	}
 	if r == nil {
 		return nil
+	}
+	if recovery := q.cryptoRecovery(encLevel); recovery != nil {
+		if frame := recovery.pop(maxLen); frame != nil {
+			return frame
+		}
+		if len(recovery.pending) > 0 {
+			return nil
+		}
 	}
 
 	if len(r.crypto) > 0 {
@@ -117,8 +135,14 @@ func (q *retransmissionQueue) DropPackets(encLevel protocol.EncryptionLevel) {
 	switch encLevel {
 	case protocol.EncryptionInitial:
 		q.initial = nil
+		if q.initialRecovery != nil {
+			q.initialRecovery.close()
+		}
 	case protocol.EncryptionHandshake:
 		q.handshake = nil
+		if q.handshakeRecovery != nil {
+			q.handshakeRecovery.close()
+		}
 	default:
 		panic(fmt.Sprintf("unexpected encryption level: %s", encLevel))
 	}
@@ -127,11 +151,27 @@ func (q *retransmissionQueue) DropPackets(encLevel protocol.EncryptionLevel) {
 func (q *retransmissionQueue) AckHandler(encLevel protocol.EncryptionLevel) ackhandler.FrameHandler {
 	switch encLevel {
 	case protocol.EncryptionInitial:
+		if q.initialRecovery != nil {
+			return q.initialRecovery
+		}
 		return (*retransmissionQueueInitialAckHandler)(q)
 	case protocol.EncryptionHandshake:
+		if q.handshakeRecovery != nil {
+			return q.handshakeRecovery
+		}
 		return (*retransmissionQueueHandshakeAckHandler)(q)
 	case protocol.Encryption0RTT, protocol.Encryption1RTT:
 		return (*retransmissionQueueAppDataAckHandler)(q)
+	}
+	return nil
+}
+
+func (q *retransmissionQueue) cryptoRecovery(level protocol.EncryptionLevel) *cryptoRangeRecovery {
+	if level == protocol.EncryptionInitial {
+		return q.initialRecovery
+	}
+	if level == protocol.EncryptionHandshake {
+		return q.handshakeRecovery
 	}
 	return nil
 }

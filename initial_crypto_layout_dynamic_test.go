@@ -104,7 +104,7 @@ func TestInitialCryptoLayoutClientOnly(t *testing.T) {
 	for _, perspective := range []protocol.Perspective{protocol.PerspectiveClient, protocol.PerspectiveServer} {
 		config := populateConfig(&Config{ClientHandshake: &ClientHandshake{InitialCryptoLayout: func(InitialCryptoLayoutInfo) [][]CryptoRange { return nil }}})
 		conn := &Conn{config: config, perspective: perspective, initialStream: newInitialCryptoStream(perspective == protocol.PerspectiveClient)}
-		conn.configureInitialCryptoStream()
+		conn.configureClientCryptoStreams()
 		require.Equal(t, perspective == protocol.PerspectiveClient, conn.initialStream.layout != nil)
 		require.NotNil(t, config.Clone().ClientHandshake.InitialCryptoLayout, "config snapshots retain policy callbacks")
 	}

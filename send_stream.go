@@ -33,6 +33,7 @@ type SendStream struct {
 
 	numOutstandingFrames int64 // outstanding STREAM and RESET_STREAM frames
 	retransmissionQueue  []*wire.StreamFrame
+	recovery             *streamRangeRecovery
 
 	ctx       context.Context
 	ctxCancel context.CancelCauseFunc
@@ -356,8 +357,10 @@ func (s *SendStream) canBufferStreamFrame() bool {
 func (s *SendStream) popStreamFrame(maxBytes protocol.ByteCount, v protocol.Version) (_ ackhandler.StreamFrame, _ *wire.StreamDataBlockedFrame, hasMoreData bool) {
 	s.mutex.Lock()
 	f, blocked, hasMoreData := s.popNewStreamFrameForPacket(maxBytes, v)
+	var handler ackhandler.FrameHandler
 	if f != nil {
 		s.numOutstandingFrames++
+		handler = s.streamFrameHandler(f)
 	}
 	s.mutex.Unlock()
 	if blocked != nil {
@@ -369,7 +372,7 @@ func (s *SendStream) popStreamFrame(maxBytes protocol.ByteCount, v protocol.Vers
 	}
 	return ackhandler.StreamFrame{
 		Frame:   f,
-		Handler: (*sendStreamAckHandler)(s),
+		Handler: handler,
 	}, blocked, hasMoreData
 }
 
@@ -510,6 +513,7 @@ func (s *SendStream) popNewStreamFrame(maxDataLen protocol.ByteCount) (_ *wire.S
 // newPooledStreamFrame returns a pooled STREAM frame holding a copy of data.
 func (s *SendStream) newPooledStreamFrame(offset protocol.ByteCount, data []byte) *wire.StreamFrame {
 	f := wire.GetStreamFrame()
+	f.Fin = false
 	f.StreamID = s.streamID
 	f.Offset = offset
 	f.DataLenPresent = true
@@ -520,6 +524,9 @@ func (s *SendStream) newPooledStreamFrame(offset protocol.ByteCount, data []byte
 
 func (s *SendStream) popRetransmissionFrame(maxBytes protocol.ByteCount, v protocol.Version) (_ ackhandler.StreamFrame, hasMore bool) {
 	s.mutex.Lock()
+	if s.recovery != nil {
+		s.recovery.coalesceQueue(s)
+	}
 	if s.shutdownErr != nil || len(s.retransmissionQueue) == 0 {
 		s.mutex.Unlock()
 		return ackhandler.StreamFrame{}, false
@@ -533,15 +540,17 @@ func (s *SendStream) popRetransmissionFrame(maxBytes protocol.ByteCount, v proto
 		s.retransmissionQueue = s.retransmissionQueue[1:]
 		hasMore = len(s.retransmissionQueue) > 0
 	}
+	var handler ackhandler.FrameHandler
 	if f != nil {
 		s.numOutstandingFrames++
+		handler = s.streamFrameHandler(f)
 	}
 	s.mutex.Unlock()
 
 	if f == nil {
 		return ackhandler.StreamFrame{}, hasMore
 	}
-	return ackhandler.StreamFrame{Frame: f, Handler: (*sendStreamAckHandler)(s)}, hasMore
+	return ackhandler.StreamFrame{Frame: f, Handler: handler}, hasMore
 }
 
 func (s *SendStream) getDataForWriting(f *wire.StreamFrame, maxBytes protocol.ByteCount) {
@@ -639,6 +648,11 @@ func (s *SendStream) SetReliableBoundary() {
 
 // returnFramesToPool returns all queued frames to the sync.Pool
 func (s *SendStream) returnFramesToPool() {
+	if s.recovery != nil {
+		s.recovery.closed = true
+		s.recovery.live = nil
+		s.recovery.acked = nil
+	}
 	for _, f := range s.retransmissionQueue {
 		f.PutBack()
 	}
@@ -721,6 +735,9 @@ func (s *SendStream) CancelWrite(errorCode StreamErrorCode) {
 			}
 			s.retransmissionQueue = retransmissionQueue
 		}
+	}
+	if s.recovery != nil && !s.recovery.closed {
+		s.recovery.retireSatisfied(s)
 	}
 	s.mutex.Unlock()
 
@@ -865,7 +882,14 @@ func (s *SendStream) SetWriteDeadline(t time.Time) error {
 func (s *SendStream) closeForShutdown(err error) {
 	s.mutex.Lock()
 	s.completed = true
-	if s.shutdownErr == nil && !s.finishedWriting {
+	if s.recovery != nil {
+		s.recovery.closed = true
+		s.recovery.live = nil
+		s.recovery.acked = nil
+	}
+	// A rejected epoch's IDs can be reused by fresh streams. Even a local FIN
+	// must become inert, so a later CancelWrite cannot reset the new stream.
+	if s.shutdownErr == nil && (!s.finishedWriting || err == Err0RTTRejected) {
 		s.shutdownErr = err
 		s.returnFramesToPool()
 	}

@@ -47,6 +47,15 @@ values, presets or new configuration options are involved.
 
 ## Small hooks
 
+Initial byte-range recovery is isolated in `crypto_range_recovery.go`.
+`ClientHandshake` optionally selects range tracking, a recovery layout, Initial
+PTO allowance/preparation, number skipping and reactions to peer probes. Defaults
+retain native behavior; browser values belong in Surf. The packet packer invokes
+the recovery policy with live budgets and absolute offsets, including after HRR.
+PTO preparation can retain original ACK callbacks without declaring those packets
+lost. Keep the interval-oracle, late-ACK, HRR and raw-wire regressions when merging
+upstream; remove local mechanisms only when upstream supplies equivalent hooks.
+
 | Extension | Own implementation | Existing source hooks |
 | --- | --- | --- |
 | Client controls, per-attempt factories, receive windows, datagram/CID/ACK limits, Initial ID/number | `client_handshake.go` | `interface.go`, `config.go`, `connection.go`, `transport.go` |
@@ -548,6 +557,36 @@ bidirectional transfers under deterministic packet loss with both profiles.
 These are source and transport checks, not proof of identical browser NIC timing.
 
 
+## Optional Handshake and Application PTO policies
+
+`HandshakeProbePackets` and `ApplicationProbePackets` independently select a
+bounded 0..2 PTO allowance; zero preserves the native allowance.
+`HandshakeProbeSkipPacketNumber` controls the Handshake gap. Optional
+`ApplicationProbeSkipPacketNumber` separates the Application PTO gap from random
+number skipping. Nil preserves `DisablePacketNumberSkipping`'s original authority;
+its pointer value is privately cloned. Skipped-number
+ACK validation remains enabled. `HandshakeProbeOnlyWithData` suppresses only an
+empty follow-up probe after the first Handshake PTO packet.
+
+`HandshakeCryptoRecovery` reuses `crypto_range_recovery.go` for byte ranges and
+late original PTO acknowledgments. It releases the transcript when Handshake
+keys retire. `HandshakeCryptoResendOnPeerProbe` enables PING/non-progressing
+CRYPTO reactions; duplicate Initial CRYPTO can also reschedule Handshake bytes.
+The upstream default STREAM retransmission accounting is unchanged.
+
+`PeerPacketRecoveryPolicy` receives a routed packet's missing/retired-key state
+and buffer counts. Authentication failures never invoke it. Actions can schedule
+unacknowledged Initial bytes or a Handshake PING if its sealer is available;
+neither action accepts ciphertext or weakens TLS verification. The application
+supplies conditions and limits. `ImmediateACKOnPeerPing` optionally queues an
+immediate ACK for an authenticated Application Data PING, independently of the
+normal or negotiated ACK policy. All controls default to native behavior.
+
+Keep the actual ACK-handler, missing-key/authentication-failure and encrypted
+UDP loss tests when updating upstream. Browser policies and independent native
+capture evidence live in Surf. This change does not implement complete STREAM
+copy tracking, simultaneous-space Neqo probe batching or early-data peer hints.
+
 ## Grouped application stream writes
 
 `Conn.TryWriteStreamBatch` stages a bounded list of existing local-stream writes
@@ -577,3 +616,53 @@ its exact value and validation behavior with this conversion.
 CI builds every package and compiles all tests for Linux 386, ARMv6 and ARMv7
 with CGO disabled. These cross-compilation checks skip execution; native race
 tests continue to run separately on Linux, macOS and Windows.
+
+## Rejected early stream generations
+
+`ClientHandshake.ResetStreamsOnEarlyDataRejection` enables fresh stream maps at
+verified application readiness after TLS rejection. The optional epoch sender
+drains existing callbacks and suppresses callbacks from retired streams before
+IDs are reused. A locally finished early send stream still receives its shutdown
+error, preventing a late RESET_STREAM from targeting a new stream with that ID.
+Nil/default clients preserve explicit `NextConnection` handling and incur no
+epoch-wrapper callbacks. Browser selection belongs to Surf, not the engine.
+
+## Application STREAM byte-range recovery
+
+`ClientHandshake.StreamDataRecovery` selects an optional SendStream range tracker.
+Each sent frame has immutable range/FIN metadata; any original/copy ACK retires
+covered queued copies and logical live-frame counts. Probes preserve original
+ACK handlers without declaring congestion loss. Actual losses retain only STREAM
+handler metadata separately from packet flight accounting. `StreamLossRetention`
+receives elapsed loss time, current PTO and the matching packet-number domain;
+browser constants remain in Surf profiles. Nil policy retains useful metadata
+up to the existing generic packet-history bound. Default clients/servers retain
+the upstream frame path. No new TLS provider or configuration interface is added.
+
+Range recovery lives in `stream_range_recovery.go`; optional packet metadata and
+probe scheduling live in `internal/ackhandler/stream_recovery.go`. The STREAM pool
+copy helper explicitly resets FIN. Regressions cover ranges, FIN, split/partial
+copies, RESET_STREAM_AT, shutdown/early rejection, late loss ACKs, number domains,
+Retry, bounded metadata and actual verified-TLS UDP loss/PTO scenarios. Surf
+retains independent native and engine capture reports under `stream_recovery`.
+
+### Shared PTO datagrams
+
+`ClientHandshake.CoalescePTOProbes` enables one datagram allowance and cumulative
+retransmission byte budget across eligible encryption spaces. Crypto timer
+baselines, key-gated Handshake priming and per-space force masks are isolated in
+`internal/ackhandler/pto_batch.go` and `packet_packer_pto.go`. The independent
+`InitialACKResetsPTO` option controls pre-validation backoff reset. Both default
+to false; browser policy stays in Surf. Tests cover v1/v2 packet composition,
+ACK-only traffic, Retry, key retirement and early rejection.
+
+### Peer-triggered early data recovery
+
+`PeerPacketRecovery.ResendEarlyData` and
+`ClientHandshake.EarlyDataResendOnPeerCrypto` expose early recovery tokens without
+TLS rejection, congestion loss or PTO reset. The concrete optional helper in
+`internal/ackhandler/early_data_recovery.go` removes early packet accounting and
+reschedules owned tokens. A new Application ACK, including retained actual-loss
+metadata, ends the mechanism. Authentication failures and retired keys do not
+trigger it. Firefox's selection policy remains in Surf; default clients and
+servers do not enable it. PING only retains the existing CRYPTO/ACK behavior.

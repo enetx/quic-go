@@ -27,6 +27,9 @@ const invalidStreamID = quic.StreamID(-1)
 // in particular handling of unidirectional HTTP/3 streams, SETTINGS and datagrams.
 type rawConn struct {
 	conn         *quic.Conn
+	ctx          context.Context
+	cancel       context.CancelCauseFunc
+	generationMx sync.RWMutex
 	qpackDecoder *dynamic.Decoder
 	clientQPACK  *clientQPACK
 
@@ -46,6 +49,7 @@ type rawConn struct {
 
 	settings         *Settings
 	receivedSettings chan struct{}
+	clientSession    *clientSettingsSession
 
 	qlogger          qlogwriter.Recorder
 	qloggerMx        sync.Mutex
@@ -60,8 +64,11 @@ func newRawConn(
 	qlogger qlogwriter.Recorder,
 	logger *slog.Logger,
 ) *rawConn {
+	ctx, cancel := context.WithCancelCause(quicConn.Context())
 	c := &rawConn{
 		conn:              quicConn,
+		ctx:               ctx,
+		cancel:            cancel,
 		logger:            logger,
 		enableDatagrams:   enableDatagrams,
 		receivedSettings:  make(chan struct{}),
@@ -72,13 +79,31 @@ func newRawConn(
 		controlStrHandler: controlStrHandler,
 	}
 	if qlogger != nil {
-		context.AfterFunc(quicConn.Context(), c.RemoveQlogProducer)
+		context.AfterFunc(ctx, c.RemoveQlogProducer)
 	}
 	return c
 }
 
+func (c *rawConn) context() context.Context {
+	if c.ctx != nil {
+		return c.ctx
+	}
+	return c.conn.Context()
+}
+
 func (c *rawConn) OpenUniStream() (*quic.SendStream, error) {
+	c.generationMx.RLock()
+	defer c.generationMx.RUnlock()
+	if c.context().Err() != nil {
+		return nil, context.Cause(c.context())
+	}
 	return c.conn.OpenUniStream()
+}
+
+func (c *rawConn) retireEarlyData() {
+	c.generationMx.Lock()
+	c.cancel(quic.Err0RTTRejected)
+	c.generationMx.Unlock()
 }
 
 // openControlStream opens the control stream and sends the SETTINGS frame.
@@ -100,7 +125,7 @@ func (c *rawConn) prepareControlStream(settings *settingsFrame) (*quic.SendStrea
 	c.AddQlogProducer()
 	defer c.RemoveQlogProducer()
 
-	str, err := c.conn.OpenUniStream()
+	str, err := c.OpenUniStream()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -180,6 +205,9 @@ func (c *rawConn) hasActiveStreams() bool {
 }
 
 func (c *rawConn) CloseWithError(code quic.ApplicationErrorCode, msg string) error {
+	if errors.Is(context.Cause(c.context()), quic.Err0RTTRejected) {
+		return nil
+	}
 	return c.conn.CloseWithError(code, msg)
 }
 
@@ -240,34 +268,41 @@ func (c *rawConn) handleUnidirectionalStream(str *quic.ReceiveStream, isServer b
 	}
 	// Only a single control stream is allowed.
 	if isFirstControlStr := c.rcvdControlStr.CompareAndSwap(false, true); !isFirstControlStr {
-		c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeStreamCreationError), "duplicate control stream")
+		c.CloseWithError(quic.ApplicationErrorCode(ErrCodeStreamCreationError), "duplicate control stream")
 		return
 	}
 	c.handleControlStream(str)
 }
 
 func (c *rawConn) handleControlStream(str *quic.ReceiveStream) {
-	fp := &frameParser{closeConn: c.conn.CloseWithError, r: str, streamID: str.StreamID()}
+	fp := &frameParser{closeConn: c.CloseWithError, r: str, streamID: str.StreamID()}
 	f, err := fp.ParseNext(c.qlogger)
 	if err != nil {
 		if errors.Is(err, errPriorityUpdateForPush) {
-			c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeMissingSettings), "")
+			c.CloseWithError(quic.ApplicationErrorCode(ErrCodeMissingSettings), "")
 			return
 		}
 		_, isStreamError := errors.AsType[*quic.StreamError](err)
 		if err == io.EOF || isStreamError {
-			c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "")
+			c.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "")
 			return
 		}
-		c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeFrameError), "")
+		c.CloseWithError(quic.ApplicationErrorCode(ErrCodeFrameError), "")
 		return
 	}
 	sf, ok := f.(*settingsFrame)
 	if !ok {
-		c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeMissingSettings), "")
+		c.CloseWithError(quic.ApplicationErrorCode(ErrCodeMissingSettings), "")
 		return
 	}
+	if c.clientSession != nil {
+		if code, err := c.clientSession.validateSettings(sf, c.clientQPACK); err != nil {
+			c.CloseWithError(quic.ApplicationErrorCode(code), err.Error())
+			return
+		}
+	}
 	c.settings = &Settings{
+		MaxFieldSectionSize:   sf.MaxFieldSectionSize,
 		EnableDatagrams:       sf.Datagram,
 		EnableExtendedConnect: sf.ExtendedConnect,
 		Other:                 sf.Other,
@@ -277,6 +312,9 @@ func (c *rawConn) handleControlStream(str *quic.ReceiveStream) {
 			c.CloseWithError(quic.ApplicationErrorCode(ErrCodeExcessiveLoad), err.Error())
 			return
 		}
+	}
+	if c.clientSession != nil {
+		c.clientSession.commitSettings(sf)
 	}
 	close(c.receivedSettings)
 	if sf.Datagram {
@@ -320,7 +358,7 @@ func (c *rawConn) sendDatagram(streamID quic.StreamID, b []byte) error {
 
 func (c *rawConn) receiveDatagrams() error {
 	for {
-		b, err := c.conn.ReceiveDatagram(context.Background())
+		b, err := c.conn.ReceiveDatagram(c.context())
 		if err != nil {
 			return err
 		}

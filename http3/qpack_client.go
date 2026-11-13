@@ -56,6 +56,12 @@ type QPACKConfig struct {
 	// IndexingPolicy controls insertion of new entries; existing references remain
 	// usable. Called under encoder locks; must not reenter the transport.
 	IndexingPolicy func(name, value string) bool
+	// ResumptionErrorCode optionally selects the close code when accepted 0-RTT
+	// changes a remembered nonzero maximum table capacity. Nil or a zero result
+	// selects RFC 9204's QPACK_DECODER_STREAM_ERROR. Called during SETTINGS parsing;
+	// it may run concurrently and must not perform I/O. Values outside the QUIC
+	// range become H3_INTERNAL_ERROR.
+	ResumptionErrorCode func(previous, current uint64) ErrCode
 	// DrainingFraction reserves this fraction of table space for eviction.
 	// Draining exact entries can be duplicated while their old references drain.
 	DrainingFraction float64
@@ -151,8 +157,8 @@ type clientQPACKStream struct {
 
 func (s *clientQPACKStream) enqueue(data []byte) error {
 	select {
-	case <-s.owner.conn.Context().Done():
-		return context.Cause(s.owner.conn.Context())
+	case <-s.owner.context().Done():
+		return context.Cause(s.owner.context())
 	default:
 	}
 	select {
@@ -166,14 +172,14 @@ func (s *clientQPACKStream) enqueue(data []byte) error {
 func (s *clientQPACKStream) watch() {
 	context.AfterFunc(s.stream.Context(), func() {
 		_, stopped := errors.AsType[*quic.StreamError](context.Cause(s.stream.Context()))
-		if stopped && s.owner.conn.Context().Err() == nil {
+		if stopped && s.owner.context().Err() == nil {
 			s.owner.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "QPACK send stream closed")
 		}
 	})
 }
 
 func (s *clientQPACKStream) run() {
-	ctx := s.owner.conn.Context()
+	ctx := s.owner.context()
 	select {
 	case <-ctx.Done():
 		return
@@ -213,12 +219,14 @@ func (s *clientQPACKStream) run() {
 }
 
 type clientQPACK struct {
-	config           *QPACKConfig
-	encoder, decoder *clientQPACKStream
-	mutex            sync.Mutex
-	pendingCapacity  uint64
-	capacityPending  bool
-	fieldEncoder     *dynamic.Encoder
+	config             *QPACKConfig
+	encoder, decoder   *clientQPACKStream
+	mutex              sync.Mutex
+	pendingCapacity    uint64
+	capacityPending    bool
+	settingsKnown      bool
+	capacityAdvertised bool
+	fieldEncoder       *dynamic.Encoder
 }
 
 func (q *QPACKConfig) encoderOptions() dynamic.EncoderOptions {
@@ -246,7 +254,7 @@ func (q *clientQPACK) prepare() error {
 		if typ == QPACKDecoderStream {
 			s = q.decoder
 		}
-		stream, err := s.owner.conn.OpenUniStream()
+		stream, err := s.owner.OpenUniStream()
 		if _, ok := errors.AsType[*quic.StreamLimitReachedError](err); ok {
 			break // Open on demand when more credit becomes available.
 		}
@@ -272,11 +280,14 @@ func (q *clientQPACK) prepare() error {
 func (q *clientQPACK) onSettings(capacity, blockedStreams uint64, capacityAdvertised bool) error {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
-	q.pendingCapacity = min(capacity, q.config.EncoderTableCapacity)
-	q.capacityPending = q.pendingCapacity > 0 || q.config.EncoderZeroCapacity && (!q.config.EncoderCapacityRequiresSetting || capacityAdvertised)
-	if err := q.fieldEncoder.Configure(capacity, q.pendingCapacity, blockedStreams); err != nil {
+	desired := min(capacity, q.config.EncoderTableCapacity)
+	if err := q.fieldEncoder.UpdatePeerLimits(capacity, desired, blockedStreams); err != nil {
 		return err
 	}
+	if !q.settingsKnown || desired != q.pendingCapacity || capacityAdvertised != q.capacityAdvertised {
+		q.capacityPending = q.capacityPending || desired > 0 || q.config.EncoderZeroCapacity && (!q.config.EncoderCapacityRequiresSetting || capacityAdvertised)
+	}
+	q.pendingCapacity, q.settingsKnown, q.capacityAdvertised = desired, true, capacityAdvertised
 	if q.config.EncoderCapacityTiming == QPACKCapacityOnSettings {
 		return q.flushCapacity()
 	}

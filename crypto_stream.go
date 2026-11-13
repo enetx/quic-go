@@ -28,7 +28,7 @@ type baseCryptoStream struct {
 }
 
 func newCryptoStream() *cryptoStream {
-	return &cryptoStream{baseCryptoStream{queue: *newFrameSorter()}}
+	return &cryptoStream{baseCryptoStream: baseCryptoStream{queue: *newFrameSorter()}}
 }
 
 func (s *baseCryptoStream) HandleCryptoFrame(f *wire.CryptoFrame) error {
@@ -96,6 +96,14 @@ func (s *baseCryptoStream) PopCryptoFrame(maxLen protocol.ByteCount) *wire.Crypt
 
 type cryptoStream struct {
 	baseCryptoStream
+	recovery *cryptoRangeRecovery
+}
+
+func (s *cryptoStream) Write(p []byte) (int, error) {
+	if s.recovery != nil && !s.recovery.closed {
+		s.recovery.data = append(s.recovery.data, p...)
+	}
+	return s.baseCryptoStream.Write(p)
 }
 
 type clientHelloCut struct {
@@ -109,6 +117,7 @@ type initialCryptoStream struct {
 	layout         func(InitialCryptoLayoutInfo) [][]CryptoRange
 	layoutPrepared bool
 	layoutState    *initialCryptoLayoutState
+	recovery       *cryptoRangeRecovery
 
 	scramble bool
 	end      protocol.ByteCount
@@ -148,6 +157,9 @@ func (s *initialCryptoStream) HasData() bool {
 }
 
 func (s *initialCryptoStream) Write(p []byte) (int, error) {
+	if s.recovery != nil && !s.recovery.closed {
+		s.recovery.data = append(s.recovery.data, p...)
+	}
 	s.writeBuf = append(s.writeBuf, p...)
 	if s.layout != nil && !s.layoutPrepared {
 		return len(p), nil

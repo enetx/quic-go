@@ -60,3 +60,26 @@ func TestSettingsCompatibleFor0RTT(t *testing.T) {
 		})
 	}
 }
+
+func TestServerQPACKSettingsForEarlyData(t *testing.T) {
+	for _, tc := range []struct {
+		name                                       string
+		oldCapacity, capacity, oldBlocked, blocked uint64
+		allowed                                    bool
+	}{
+		{"same", 4096, 4096, 16, 16, true},
+		{"new table", 0, 4096, 0, 16, true},
+		{"more blocked", 4096, 4096, 16, 32, true},
+		{"less blocked", 4096, 4096, 16, 1, false},
+		{"larger table", 4096, 8192, 16, 16, false},
+		{"smaller table", 4096, 1024, 16, 16, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old := &settings{MaxFieldSectionSize: 4096, Other: orderedTestSettings(map[uint64]uint64{1: tc.oldCapacity, 7: tc.oldBlocked, 64: 123})}
+			current := &settings{MaxFieldSectionSize: 4096, Other: orderedTestSettings(map[uint64]uint64{1: tc.capacity, 7: tc.blocked, 95: 456})}
+			data, ok := settingsDataFromSessionTicket([][]byte{settingsForSessionTicket(old)})
+			require.True(t, ok)
+			require.Equal(t, tc.allowed, settingsCompatibleFor0RTT(data, current))
+		})
+	}
+}

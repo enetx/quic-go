@@ -26,9 +26,10 @@ type streamsMap struct {
 	maxIncomingUniStreams      uint64
 	requireStreamCreditRelease bool
 
-	sender            streamSender
-	queueControlFrame func(wire.Frame)
-	newFlowController func(protocol.StreamID) *streamFlowController
+	streamDataRecovery bool
+	sender             streamSender
+	queueControlFrame  func(wire.Frame)
+	newFlowController  func(protocol.StreamID) *streamFlowController
 
 	mutex                 sync.Mutex
 	outgoingBidiStreams   *outgoingStreamsMap[*Stream]
@@ -64,10 +65,15 @@ func newStreamsMap(
 }
 
 func (m *streamsMap) initMaps() {
+	sender := m.sender
 	m.outgoingBidiStreams = newOutgoingStreamsMap(
 		protocol.StreamTypeBidi,
 		func(id protocol.StreamID) *Stream {
-			return newStream(m.ctx, id, m.sender, m.newFlowController(id), false)
+			str := newStream(m.ctx, id, sender, m.newFlowController(id), false)
+			if m.streamDataRecovery {
+				str.sendStr.recovery = &streamRangeRecovery{}
+			}
+			return str
 		},
 		m.queueControlFrame,
 		m.perspective,
@@ -75,7 +81,11 @@ func (m *streamsMap) initMaps() {
 	m.incomingBidiStreams = newIncomingStreamsMap(
 		protocol.StreamTypeBidi,
 		func(id protocol.StreamID) *Stream {
-			return newStream(m.ctx, id, m.sender, m.newFlowController(id), m.supportsResetStreamAt)
+			str := newStream(m.ctx, id, sender, m.newFlowController(id), m.supportsResetStreamAt)
+			if m.streamDataRecovery {
+				str.sendStr.recovery = &streamRangeRecovery{}
+			}
+			return str
 		},
 		m.maxIncomingBidiStreams,
 		m.requireStreamCreditRelease,
@@ -85,7 +95,11 @@ func (m *streamsMap) initMaps() {
 	m.outgoingUniStreams = newOutgoingStreamsMap(
 		protocol.StreamTypeUni,
 		func(id protocol.StreamID) *SendStream {
-			return newSendStream(m.ctx, id, m.sender, m.newFlowController(id), false)
+			str := newSendStream(m.ctx, id, sender, m.newFlowController(id), false)
+			if m.streamDataRecovery {
+				str.recovery = &streamRangeRecovery{}
+			}
+			return str
 		},
 		m.queueControlFrame,
 		m.perspective,
@@ -93,7 +107,7 @@ func (m *streamsMap) initMaps() {
 	m.incomingUniStreams = newIncomingStreamsMap(
 		protocol.StreamTypeUni,
 		func(id protocol.StreamID) *ReceiveStream {
-			return newReceiveStream(id, m.sender, m.newFlowController(id))
+			return newReceiveStream(id, sender, m.newFlowController(id))
 		},
 		m.maxIncomingUniStreams,
 		m.requireStreamCreditRelease,
@@ -360,8 +374,19 @@ func (m *streamsMap) CloseWithError(err error) {
 // until UseResetMaps() has been called.
 func (m *streamsMap) ResetFor0RTT() {
 	m.mutex.Lock()
-	defer m.mutex.Unlock()
 	m.reset = true
+	epoch, _ := m.sender.(*streamEpochSender)
+	m.mutex.Unlock()
+	// A callback can enter application tracing code, which may inspect streams.
+	// Never wait for that callback while holding the stream-map entry lock.
+	if epoch != nil {
+		epoch.retire()
+	}
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	if epoch != nil {
+		m.sender = &streamEpochSender{streamSender: epoch.streamSender}
+	}
 	m.CloseWithError(Err0RTTRejected)
 	m.supportsResetStreamAt = false
 	m.initMaps()

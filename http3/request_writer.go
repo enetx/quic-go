@@ -19,23 +19,23 @@ import (
 	"github.com/enetx/quic-go/qlogwriter"
 	"github.com/quic-go/qpack"
 	"golang.org/x/net/http/httpguts"
-	"golang.org/x/net/http2/hpack"
 	"golang.org/x/net/idna"
 )
 
 const bodyCopyBufferSize = 8 * 1024
 
 type requestWriter struct {
-	encodeQPACK          func(quic.StreamID, []qpack.HeaderField) ([]byte, error)
-	qpackFields          []qpack.HeaderField
-	collectBodyFields    bool
-	beforeRequestHeaders func(*http.Request, quic.StreamID) error
-	writeRequestHeaders  func(io.Writer, *http.Request, quic.StreamID, []byte) error
-	greaseFrames         func(*http.Request) ([]GreaseFrame, error)
-	qpackConfig          *QPACKConfig
-	mutex                sync.Mutex
-	encoder              *qpack.Encoder
-	headerBuf            *bytes.Buffer
+	peerMaxFieldSectionSize func() int64
+	encodeQPACK             func(quic.StreamID, []qpack.HeaderField) ([]byte, error)
+	qpackFields             []qpack.HeaderField
+	collectBodyFields       bool
+	beforeRequestHeaders    func(*http.Request, quic.StreamID) error
+	writeRequestHeaders     func(io.Writer, *http.Request, quic.StreamID, []byte) error
+	greaseFrames            func(*http.Request) ([]GreaseFrame, error)
+	qpackConfig             *QPACKConfig
+	mutex                   sync.Mutex
+	encoder                 *qpack.Encoder
+	headerBuf               *bytes.Buffer
 }
 
 func newRequestWriter() *requestWriter {
@@ -331,20 +331,15 @@ func (w *requestWriter) encodeHeaders(req *http.Request, addGzipHeader bool, tra
 		}
 	}
 
-	// Do a first pass over the headers counting bytes to ensure
-	// we don't exceed cc.peerMaxHeaderListSize. This is done as a
-	// separate pass before encoding the headers to prevent
-	// modifying the hpack state.
+	// Count uncompressed fields before mutating the connection's QPACK state.
 	hlSize := uint64(0)
 	enumerateHeaders(func(name, value string) {
-		hf := hpack.HeaderField{Name: name, Value: value}
-		hlSize += uint64(hf.Size())
+		hlSize += uint64(len(name)) + uint64(len(value)) + 32
 	})
 
-	// TODO: check maximum header list size
-	// if hlSize > cc.peerMaxHeaderListSize {
-	// 	return errRequestHeaderListSize
-	// }
+	if err := w.checkFieldSectionSize(hlSize); err != nil {
+		return nil, err
+	}
 
 	trace := httptrace.ContextClientTrace(req.Context())
 	traceHeaders := traceHasWroteHeaderField(trace)
@@ -459,6 +454,17 @@ func shouldSendReqContentLength(method string, contentLength int64) bool {
 // WriteRequestTrailer writes HTTP trailers to the stream.
 // It should be called after the request body has been fully written.
 func (w *requestWriter) WriteRequestTrailer(wr io.Writer, req *http.Request, streamID quic.StreamID, qlogger qlogwriter.Recorder) error {
+	var size uint64
+	for _, kv := range httpcommon.Sorted(req.Trailer, httpcommon.Indices(req.Trailer[httpcommon.HeaderOrderKey]), nil) {
+		if httpguts.ValidTrailerHeader(kv.Key) {
+			for _, value := range kv.Values {
+				size += uint64(len(kv.Key)) + uint64(len(value)) + 32
+			}
+		}
+	}
+	if err := w.checkFieldSectionSize(size); err != nil {
+		return err
+	}
 	if w.encodeQPACK != nil {
 		var fields []qpack.HeaderField
 		var logged []qlog.HeaderField
@@ -496,4 +502,13 @@ func (w *requestWriter) WriteRequestTrailer(wr io.Writer, req *http.Request, str
 	}
 	_, err := writeTrailers(wr, req.Trailer, streamID, qlogger)
 	return err
+}
+
+func (w *requestWriter) checkFieldSectionSize(size uint64) error {
+	if w.peerMaxFieldSectionSize != nil {
+		if limit := w.peerMaxFieldSectionSize(); limit >= 0 && size > uint64(limit) {
+			return &RequestPreparationError{fmt.Errorf("http3: request field section size %d exceeds peer limit %d", size, limit)}
+		}
+	}
+	return nil
 }

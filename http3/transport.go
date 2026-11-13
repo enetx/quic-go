@@ -23,6 +23,9 @@ import (
 
 // Settings are HTTP/3 settings that apply to the underlying connection.
 type Settings struct {
+	// MaxFieldSectionSize bounds uncompressed field sections sent to this peer.
+	// A negative value means the peer omitted the setting; zero is a real limit.
+	MaxFieldSectionSize int64
 	// Support for HTTP/3 datagrams (RFC 9297)
 	EnableDatagrams bool
 	// Extended CONNECT, RFC 9220
@@ -65,6 +68,11 @@ func (r *roundTripperWithCount) Close() error {
 
 // Transport implements the [http.RoundTripper] interface.
 type Transport struct {
+	// EarlyDataRestart keeps a rejected 0-RTT connection and recreates HTTP/3
+	// protocol state after verified TLS. Replayable requests restart once;
+	// the default preserves the caller-managed rejection behavior.
+	// This option applies to pooled RoundTrip connections.
+	EarlyDataRestart bool
 	// TLSClientConfig specifies the TLS configuration to use with
 	// [tls.Client]. If nil, the default configuration is used.
 	TLSClientConfig *tls.Config
@@ -103,8 +111,8 @@ type Transport struct {
 	// request streams. Nil preserves quic-go's default scheduling.
 	StreamPriority *StreamPriority
 
-	// QPACKConfig optionally controls client QPACK stream creation and capacity
-	// announcements. It does not enable dynamic request encoding.
+	// QPACKConfig optionally controls request compression, critical streams and
+	// capacity announcements. DynamicTable enables dynamic request encoding.
 	QPACKConfig *QPACKConfig
 
 	// WireConfig optionally controls reserved frames and request priority updates.
@@ -119,9 +127,10 @@ type Transport struct {
 
 	newClientConn func(*quic.Conn) clientConn
 
-	clients   map[string]*roundTripperWithCount
-	transport *quic.Transport
-	closed    bool
+	clients        map[string]*roundTripperWithCount
+	transport      *quic.Transport
+	closed         bool
+	clientSessions sync.Map // *quic.Conn -> *clientSettingsSession
 }
 
 var (
@@ -410,6 +419,7 @@ func (t *Transport) dial(ctx context.Context, hostname string) (*quic.Conn, clie
 	var clientsMu sync.Mutex
 	clients := make(map[*quic.Conn]clientConn)
 	var prepared bool
+	var activeRestart atomic.Pointer[earlyRestartClient]
 	defer func() {
 		clientsMu.Lock()
 		prepared = true
@@ -420,23 +430,65 @@ func (t *Transport) dial(ctx context.Context, hostname string) (*quic.Conn, clie
 		clientsMu.Lock()
 		defer clientsMu.Unlock()
 		if prepared {
+			if active := activeRestart.Load(); active != nil && active.conn == conn {
+				return active
+			}
 			return nil // A late, unselected candidate no longer needs setup.
 		}
 		client := clients[conn]
 		if client == nil {
 			client = t.newClientConn(conn)
+			if native, ok := client.(*ClientConn); ok {
+				if session, found := t.clientSessions.Load(conn); found {
+					native.bindSession(session.(*clientSettingsSession))
+				}
+			}
+			if native, ok := client.(*ClientConn); ok && t.EarlyDataRestart {
+				client = newEarlyRestartClient(native, func() *ClientConn {
+					fresh := t.newConfiguredClientConn(conn)
+					if session, found := t.clientSessions.Load(conn); found {
+						fresh.bindSession(session.(*clientSettingsSession))
+					}
+					return fresh
+				})
+			}
 			clients[conn] = client
 		}
 		return client
 	}
-	if t.WireConfig != nil && t.WireConfig.CoalesceInitialSettings {
-		config = config.Clone()
-		if config.ClientHandshake == nil {
-			config.ClientHandshake = &quic.ClientHandshake{}
+	config = config.Clone()
+	if config.ClientHandshake == nil {
+		config.ClientHandshake = &quic.ClientHandshake{}
+	}
+	previousWrap := config.ClientHandshake.WrapTLSClient
+	config.ClientHandshake.WrapTLSClient = t.wrapSessionTLS(previousWrap)
+	if t.EarlyDataRestart {
+		config.ClientHandshake.ResetStreamsOnEarlyDataRejection = true
+		previous := config.ClientHandshake.OnEarlyDataRejected
+		config.ClientHandshake.OnEarlyDataRejected = func(conn *quic.Conn) {
+			if active := activeRestart.Load(); active != nil {
+				if active.conn == conn {
+					active.reject()
+				}
+			} else {
+				clientsMu.Lock()
+				if client, ok := clients[conn].(*earlyRestartClient); ok {
+					client.reject()
+				}
+				clientsMu.Unlock()
+			}
+			if previous != nil {
+				previous(conn)
+			}
 		}
+	}
+	if t.EarlyDataRestart || t.WireConfig != nil && t.WireConfig.CoalesceInitialSettings {
 		previous := config.ClientHandshake.OnApplicationReady
 		config.ClientHandshake.OnApplicationReady = func(conn *quic.Conn) {
-			ensureClient(conn)
+			client := ensureClient(conn)
+			if client, ok := client.(*earlyRestartClient); ok {
+				client.applicationReady()
+			}
 			if previous != nil {
 				previous(conn)
 			}
@@ -447,10 +499,18 @@ func (t *Transport) dial(ctx context.Context, hostname string) (*quic.Conn, clie
 		return nil, nil, err
 	}
 	clientConn := ensureClient(conn)
+	if client, ok := clientConn.(*earlyRestartClient); ok {
+		activeRestart.Store(client)
+	}
 	go func() {
 		for {
 			str, err := conn.AcceptUniStream(context.Background())
 			if err != nil {
+				if client, ok := clientConn.(*earlyRestartClient); ok && errors.Is(err, quic.Err0RTTRejected) {
+					if _, err := client.active(conn.Context()); err == nil {
+						continue
+					}
+				}
 				return
 			}
 			go clientConn.handleUnidirectionalStream(str)

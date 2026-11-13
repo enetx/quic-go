@@ -109,6 +109,21 @@ func (e *Encoder) Configure(maximum, capacity, blocked uint64) error {
 	return nil
 }
 
+// UpdatePeerLimits applies compatible peer limits after remembered 0-RTT
+// settings. A nonzero maximum fixes Required Insert Count modulo and cannot
+// change. Zero can grow while the table is empty; capacity and blocked-stream
+// allowances may increase. Existing entries and acknowledgments are retained.
+func (e *Encoder) UpdatePeerLimits(maximum, capacity, blocked uint64) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if maximum > maxInt || capacity > maximum || blocked > maxInt ||
+		e.configured && (e.maximum != 0 && maximum != e.maximum || capacity < e.capacity || blocked < e.blocked) {
+		return errors.New("qpack: incompatible remembered encoder limits")
+	}
+	e.maximum, e.capacity, e.blocked, e.configured = maximum, capacity, blocked, true
+	return nil
+}
+
 // ErrEncoderBlocked asks Encode to keep its existing state and emit a static
 // section. emit must either accept the entire instruction batch in order or
 // reject it without sending any bytes. It must not reenter this Encoder.

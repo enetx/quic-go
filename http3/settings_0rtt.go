@@ -39,7 +39,16 @@ func settingsCompatibleFor0RTT(data []byte, current *settings) bool {
 		return false
 	}
 	// An unknown setting might belong to an extension that this version no longer supports.
-	if len(old.Other) > 0 {
+	for _, field := range old.Other {
+		id := field.Key
+		if id != 1 && id != 7 && !(id >= 33 && (id-33)%31 == 0) {
+			return false
+		}
+	}
+	if previous := old.Other.Get(1).UnwrapOrDefault(); previous > 0 && previous != current.Other.Get(1).UnwrapOrDefault() {
+		return false
+	}
+	if old.Other.Get(7).UnwrapOrDefault() > current.Other.Get(7).UnwrapOrDefault() {
 		return false
 	}
 

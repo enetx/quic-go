@@ -9,7 +9,7 @@ import (
 	"github.com/enetx/quic-go/internal/wire"
 )
 
-// CryptoRange selects bytes of the first ClientHello by their stream offset.
+// CryptoRange selects Initial CRYPTO bytes by their absolute stream offset.
 // Length must be positive. Offsets and lengths exclude CRYPTO frame headers.
 type CryptoRange struct {
 	// Offset is the zero-based position in the Initial CRYPTO stream.
@@ -26,9 +26,11 @@ type CryptoRange struct {
 // the callback again with the actual unsent ranges and next packet's budgets.
 // A group may be split if it exceeds the frame budget. Nil initially retains
 // native preparation; after a custom group it selects sequential unsent ranges.
-// Subsequent TLS messages and retransmissions retain native recovery behavior.
+// Subsequent TLS messages retain native first-send behavior. Optional
+// InitialCryptoRecoveryLayout independently selects retransmitted byte ranges.
 type InitialCryptoLayoutInfo struct {
-	// Length includes the four-byte TLS handshake header.
+	// Length includes the four-byte TLS handshake header. A recovery callback
+	// receives the retained Initial stream length, including later messages.
 	Length int
 	// SNIOffset is the hostname position, or -1 when SNI is absent.
 	SNIOffset int
