@@ -124,6 +124,35 @@ type ClientHandshake struct {
 	// It must not block, reenter Dial, call CloseWithError or use blocking Write.
 	// OpenUniStream and SendStream.TryWriteAll may be used to stage initial data.
 	OnApplicationReady func(*Conn)
+	// OnEarlyDataReady runs once with restored transport parameters and 0-RTT
+	// write keys, before releasing the early connection. By default it stages
+	// data before the first Initial flight is packetized. FlushEarlyData selects
+	// a separate send opportunity after currently sendable Initial data instead.
+	// This does not authenticate the server. The callback runs on the connection
+	// loop and must not block, reenter Dial, CloseWithError or TryWriteStreamBatch.
+	// OpenUniStream and SendStream.TryWriteAll may stage bounded initial data.
+	// Nil retains upstream early-connection readiness and scheduling.
+	OnEarlyDataReady func(*Conn)
+	// FlushEarlyData, when OnEarlyDataReady is set, packetizes sendable Initial
+	// data before invoking that callback, then flushes sendable staged data before
+	// releasing the early connection. Pacing, congestion and queue limits retain
+	// authority; no delivery or fixed packet count is guaranteed. False stages
+	// the callback's data before the first Initial flight, without a flush barrier.
+	FlushEarlyData bool
+	// CoalesceSmallEarlyPackets permits protected 0-RTT packets in a datagram
+	// remainder below the native 128-byte coalescing threshold. Actual header,
+	// AEAD and header-protection sample limits still apply. Other packet spaces
+	// and the default coalescing threshold remain unchanged.
+	CoalesceSmallEarlyPackets bool
+	// InitialCryptoCoalescingBarrier keeps later packet spaces out of an Initial
+	// datagram while more Initial CRYPTO remains queued. It does not wait for an
+	// ACK or handshake confirmation. False retains the native normal-send path.
+	InitialCryptoCoalescingBarrier bool
+	// StreamSchedulingByCreation services writable streams in their creation
+	// order instead of urgency/incremental queues. Retransmissions retain their
+	// precedence over new data. Blocked streams never block later streams. This
+	// takes precedence over SetPriority and retains state only for open streams.
+	StreamSchedulingByCreation bool
 	// OmitInitialAckOnHandshake omits an ACK-only Initial when client
 	// Handshake data is ready. Initial keys are discarded when Handshake sends.
 	OmitInitialAckOnHandshake bool
@@ -561,6 +590,11 @@ func (c *Conn) configureClientPacketPacker() {
 		c.framer.sortConnectionIDFrames = h.SortConnectionIDFrames
 		ackhandler.SetPacketNumberLengthPolicy(c.sentPacketHandler, h.PacketNumberLengthPolicy)
 		p := c.packer.(*packetPacker)
+		p.coalesceSmallEarlyPackets = h.CoalesceSmallEarlyPackets
+		p.initialCryptoCoalescingBarrier = h.InitialCryptoCoalescingBarrier
+		if h.StreamSchedulingByCreation {
+			c.framer.enableStreamCreationOrder()
+		}
 		if h.PacketNumberLengthPolicy != nil {
 			p.coalescedPacketSize = func(space protocol.PacketNumberSpace, size protocol.ByteCount) {
 				ackhandler.SetCoalescedPacketSize(c.sentPacketHandler, space, size)

@@ -146,13 +146,14 @@ func (q *QPACKConfig) Validate() error {
 // Each critical stream has one writer. A blocked stream cannot block the control
 // stream parser or request headers; the bounded queue retains instruction order.
 type clientQPACKStream struct {
-	owner    *rawConn
-	typ      QPACKStreamType
-	stream   *quic.SendStream // reserved before ready is closed, then owned by run
-	queue    chan []byte
-	ready    <-chan struct{}
-	eager    bool        // set before ready is closed
-	reserved atomic.Bool // stream credit exists before admitting dynamic references
+	owner      *rawConn
+	typ        QPACKStreamType
+	stream     *quic.SendStream // reserved before ready is closed, then owned by run
+	queue      chan []byte
+	ready      <-chan struct{}
+	eager      bool        // set before ready is closed
+	typeStaged bool        // published by ready; the writer resumes after staged bytes
+	reserved   atomic.Bool // stream credit exists before admitting dynamic references
 }
 
 func (s *clientQPACKStream) enqueue(data []byte) error {
@@ -185,8 +186,8 @@ func (s *clientQPACKStream) run() {
 		return
 	case <-s.ready:
 	}
-	typeSent := false
-	pendingType := s.eager
+	typeSent := s.typeStaged
+	pendingType := s.eager && !typeSent
 	for {
 		var data []byte
 		if pendingType {
@@ -273,6 +274,32 @@ func (q *clientQPACK) prepare() error {
 			}
 			s.eager = true
 		}
+	}
+	return nil
+}
+
+// Stage eager type bytes in reservation order before waking either writer.
+// Missing stream credit and blocked streams retain their asynchronous owner.
+func (q *clientQPACK) stageEagerTypes() error {
+	if !q.config.EagerStreamTypes {
+		return nil
+	}
+	for _, typ := range q.config.StreamOrder {
+		s := q.encoder
+		if typ == QPACKDecoderStream {
+			s = q.decoder
+		}
+		if s.stream == nil {
+			continue
+		}
+		err := s.stream.TryWriteAll(quicvarint.Append(nil, uint64(s.typ)))
+		if errors.Is(err, quic.ErrWouldBlock) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		s.typeStaged = true
 	}
 	return nil
 }

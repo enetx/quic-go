@@ -55,9 +55,15 @@ type WireConfig struct {
 	// concurrent requests. Nil leaves response handling unchanged.
 	OnResponseHeaders func(*http.Request, *http.Response) error
 	// CoalesceInitialSettings stages control-stream data before the first
-	// post-handshake flight when peer credit allows. Backpressure falls back
-	// to asynchronous writes on the same stream. Factories must not block.
+	// application flight when peer credit allows. With early keys, setup runs
+	// before Initial packetization unless FlushEarlySettings is enabled.
+	// Backpressure keeps asynchronous writes on the same stream. Factories must not block.
 	CoalesceInitialSettings bool
+	// FlushEarlySettings stages initial control data and attempts to flush it
+	// before releasing a resumed early connection to requests. The Initial flight
+	// gets its own send opportunity first. Congestion and pacing can defer either
+	// write; packet counts and delivery are not fixed. Does not enable early data.
+	FlushEarlySettings bool
 	// CoalesceRequestHeaders stages initial priority, request HEADERS and a
 	// bodyless request's FIN in one connection-loop turn. Congestion and packet
 	// size limits still apply. Blocked control streams retain asynchronous writes.

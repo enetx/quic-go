@@ -150,7 +150,7 @@ func newClientConnWithWire(
 	c.rawConn.configureQPACK(additionalSettings)
 	// Send SETTINGS in 0-RTT when available, otherwise stage the control
 	// stream before the first post-handshake flight if explicitly requested.
-	if c.wireConfig.CoalesceInitialSettings {
+	if c.wireConfig.CoalesceInitialSettings || c.wireConfig.FlushEarlySettings {
 		c.startInitialSettings(enableDatagrams, additionalSettings, true)
 	} else {
 		go c.startInitialSettings(enableDatagrams, additionalSettings, false)

@@ -482,7 +482,19 @@ func (t *Transport) dial(ctx context.Context, hostname string) (*quic.Conn, clie
 			}
 		}
 	}
-	if t.EarlyDataRestart || t.WireConfig != nil && t.WireConfig.CoalesceInitialSettings {
+	if t.WireConfig != nil && (t.WireConfig.CoalesceInitialSettings || t.WireConfig.FlushEarlySettings) {
+		if t.WireConfig.FlushEarlySettings {
+			config.ClientHandshake.FlushEarlyData = true
+		}
+		previous := config.ClientHandshake.OnEarlyDataReady
+		config.ClientHandshake.OnEarlyDataReady = func(conn *quic.Conn) {
+			ensureClient(conn)
+			if previous != nil {
+				previous(conn)
+			}
+		}
+	}
+	if t.EarlyDataRestart || t.WireConfig != nil && (t.WireConfig.CoalesceInitialSettings || t.WireConfig.FlushEarlySettings) {
 		previous := config.ClientHandshake.OnApplicationReady
 		config.ClientHandshake.OnApplicationReady = func(conn *quic.Conn) {
 			client := ensureClient(conn)

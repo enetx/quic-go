@@ -202,12 +202,13 @@ type Conn struct {
 	undecryptablePackets          []receivedPacketWithChecksum // undecryptable packets, waiting for a change in encryption level
 	undecryptablePacketsToProcess []receivedPacketWithChecksum
 
-	earlyConnReadyChan chan struct{}
-	sentFirstPacket    bool
-	droppedInitialKeys bool
-	handshakeComplete  bool
-	handshakeConfirmed bool
-	earlyDataRejected  bool
+	earlyConnReadyChan    chan struct{}
+	earlyDataReadyPending bool // Connection-loop owned; enabled only by an early-data callback.
+	sentFirstPacket       bool
+	droppedInitialKeys    bool
+	handshakeComplete     bool
+	handshakeConfirmed    bool
+	earlyDataRejected     bool
 
 	receivedRetry       bool
 	versionNegotiated   bool
@@ -775,6 +776,10 @@ runLoop:
 
 		c.blocked = blockModeNone // sending might set it back to true if we're congestion limited
 		if err := c.triggerSending(now); err != nil {
+			c.setCloseError(&closeError{err: err})
+			break runLoop
+		}
+		if err := c.releaseEarlyData(now); err != nil {
 			c.setCloseError(&closeError{err: err})
 			break runLoop
 		}
@@ -2168,7 +2173,16 @@ func (c *Conn) handleHandshakeEvents(now monotime.Time) error {
 			err = c.handleTransportParameters(ev.TransportParameters)
 		case handshake.EventRestoredTransportParameters:
 			c.restoreTransportParameters(ev.TransportParameters)
-			close(c.earlyConnReadyChan)
+			if h := c.config.ClientHandshake; h != nil && h.OnEarlyDataReady != nil {
+				if h.FlushEarlyData {
+					c.earlyDataReadyPending = true
+				} else {
+					h.OnEarlyDataReady(c)
+					close(c.earlyConnReadyChan)
+				}
+			} else {
+				close(c.earlyConnReadyChan)
+			}
 		case handshake.EventReceived0RTTReadKeys,
 			handshake.EventReceivedHandshakeReadKeys,
 			handshake.EventReceived1RTTReadKeys:
@@ -3153,6 +3167,7 @@ func (c *Conn) OpenUniStreamSync(ctx context.Context) (*SendStream, error) {
 }
 
 func (c *Conn) newFlowController(id protocol.StreamID) *streamFlowController {
+	c.framer.recordStreamCreation(id)
 	// Outgoing streams get their effective send window from the stream map,
 	// under the same lock that serializes stream creation and parameter updates.
 	var initialSendWindow protocol.ByteCount

@@ -144,19 +144,21 @@ type packetPacker struct {
 	retransmissionQueue *retransmissionQueue
 	rand                rand.Rand
 
-	numNonAckElicitingAcks     int
-	shouldProbeAckOnly         func(monotime.Time) bool
-	ackOnlyPingThreshold       int
-	ackOnlyMaxDataThreshold    int
-	queueAckOnlyProbe          func()
-	initialPaddingMode         InitialPaddingMode
-	handshakeAckBeforeData     bool
-	handshakeAckBeforeDataSent bool
-	sortConnectionIDFrames     bool
-	initialProtection          *InitialPacketProtection
-	coalescedPacketSize        func(protocol.PacketNumberSpace, protocol.ByteCount)
-	omitInitialAckOnHandshake  bool
-	qlogger                    qlogwriter.Recorder
+	numNonAckElicitingAcks         int
+	shouldProbeAckOnly             func(monotime.Time) bool
+	ackOnlyPingThreshold           int
+	ackOnlyMaxDataThreshold        int
+	queueAckOnlyProbe              func()
+	initialPaddingMode             InitialPaddingMode
+	handshakeAckBeforeData         bool
+	handshakeAckBeforeDataSent     bool
+	sortConnectionIDFrames         bool
+	initialProtection              *InitialPacketProtection
+	coalescedPacketSize            func(protocol.PacketNumberSpace, protocol.ByteCount)
+	omitInitialAckOnHandshake      bool
+	coalesceSmallEarlyPackets      bool
+	initialCryptoCoalescingBarrier bool
+	qlogger                        qlogwriter.Recorder
 }
 
 var _ packer = &packetPacker{}
@@ -421,7 +423,7 @@ func (p *packetPacker) packCoalescedPacket(onlyAck bool, maxSize protocol.ByteCo
 
 	// Add a Handshake packet. During a shared PTO, remaining Initial CRYPTO
 	// retains priority over later spaces, including early Application streams.
-	initialPending := p.ptoProbeForce != nil && initialPayload.length > 0 && (p.initialStream.HasData() || p.retransmissionQueue.HasData(protocol.EncryptionInitial))
+	initialPending := (p.ptoProbeForce != nil || p.initialCryptoCoalescingBarrier) && initialPayload.length > 0 && (p.initialStream.HasData() || p.retransmissionQueue.HasData(protocol.EncryptionInitial))
 	var handshakeSealer sealer
 	if !initialPending && ((onlyAck && (size == 0 || handshakeAckOnly && size < maxSize-protocol.MinCoalescedPacketSize)) || (!onlyAck && size < maxSize-protocol.MinCoalescedPacketSize)) {
 		var err error
@@ -459,13 +461,15 @@ func (p *packetPacker) packCoalescedPacket(onlyAck bool, maxSize protocol.ByteCo
 	var oneRTTSealer handshake.ShortHeaderSealer
 	var connID protocol.ConnectionID
 	var kp protocol.KeyPhaseBit
-	if !initialPending && !handshakeAckOnly && ((onlyAck && size == 0) || (!onlyAck && size < maxSize-protocol.MinCoalescedPacketSize)) {
+	appSpace := (onlyAck && size == 0) || (!onlyAck && size < maxSize-protocol.MinCoalescedPacketSize)
+	smallEarlySpace := p.coalesceSmallEarlyPackets && !onlyAck && size < maxSize
+	if !initialPending && !handshakeAckOnly && (appSpace || smallEarlySpace) {
 		var err error
 		oneRTTSealer, err = p.cryptoSetup.Get1RTTSealer()
 		if err != nil && err != handshake.ErrKeysDropped && err != handshake.ErrKeysNotYetAvailable {
 			return nil, err
 		}
-		if err == nil { // 1-RTT
+		if err == nil && appSpace { // 1-RTT retains the native threshold.
 			kp = oneRTTSealer.KeyPhase()
 			connID = p.getDestConnID()
 			oneRTTPacketNumber, oneRTTPacketNumberLen = p.peekShortHeaderPacketNumber()
@@ -475,7 +479,7 @@ func (p *packetPacker) packCoalescedPacket(onlyAck bool, maxSize protocol.ByteCo
 			if oneRTTPayload.length > 0 {
 				size += p.shortHeaderPacketLength(connID, oneRTTPacketNumberLen, oneRTTPayload) + protocol.ByteCount(oneRTTSealer.Overhead())
 			}
-		} else if p.perspective == protocol.PerspectiveClient && !onlyAck { // 0-RTT packets can't contain ACK frames
+		} else if err != nil && p.perspective == protocol.PerspectiveClient && !onlyAck { // 0-RTT packets can't contain ACK frames
 			var err error
 			zeroRTTSealer, err = p.cryptoSetup.Get0RTTSealer()
 			if err != nil && err != handshake.ErrKeysDropped && err != handshake.ErrKeysNotYetAvailable {
@@ -483,7 +487,9 @@ func (p *packetPacker) packCoalescedPacket(onlyAck bool, maxSize protocol.ByteCo
 			}
 			if zeroRTTSealer != nil {
 				zeroRTTHdr, zeroRTTPayload = p.maybeGetAppDataPacketFor0RTT(zeroRTTSealer, maxSize-size, now, v)
-				zeroRTTPayload = p.forcePTOProbe(zeroRTTPayload, protocol.PacketNumberSpaceAppData, maxSize-size-protocol.ByteCount(zeroRTTSealer.Overhead())-zeroRTTHdr.GetLength(v), v)
+				if zeroRTTHdr != nil {
+					zeroRTTPayload = p.forcePTOProbe(zeroRTTPayload, protocol.PacketNumberSpaceAppData, maxSize-size-protocol.ByteCount(zeroRTTSealer.Overhead())-zeroRTTHdr.GetLength(v), v)
+				}
 				if zeroRTTPayload.length > 0 {
 					if pn := p.pnManager.PopPacketNumber(protocol.PacketNumberSpaceAppData); pn != zeroRTTHdr.PacketNumber {
 						return nil, fmt.Errorf("packetPacker BUG: Peeked and Popped packet numbers do not match: expected %d, got %d", zeroRTTHdr.PacketNumber, pn)
@@ -720,6 +726,9 @@ func (p *packetPacker) maybeGetAppDataPacketFor0RTT(sealer sealer, maxSize proto
 
 	hdr := p.getLongHeader(protocol.Encryption0RTT, v)
 	maxPayloadSize := maxSize - hdr.GetLength(v) - protocol.ByteCount(sealer.Overhead())
+	if maxPayloadSize < max(1, 4-protocol.ByteCount(hdr.PacketNumberLen)) {
+		return nil, payload{}
+	}
 	return hdr, p.maybeGetAppDataPacket(maxPayloadSize, false, false, now, v)
 }
 
@@ -856,6 +865,11 @@ func (p *packetPacker) composeNextPacket(
 					// This DATAGRAM frame only fit without the length field, so it has to be the last frame in the packet.
 					break
 				}
+			} else if p.coalesceSmallEarlyPackets && !ackAllowed && maxPayloadSize < protocol.MinCoalescedPacketSize {
+				// A small coalesced tail is temporary, not a new path MTU.
+				// Keep this message for the next full packet instead of dropping it.
+				f.DataLenPresent = true
+				break
 			} else if pl.ack == nil && len(pl.frames) == 0 {
 				// The DATAGRAM frame doesn't fit, and the packet doesn't contain an ACK or any other frames.
 				// Discard this frame. There's no point in retrying this in the next packet,
@@ -880,7 +894,11 @@ func (p *packetPacker) composeNextPacket(
 	if hasData {
 		var lengthAdded protocol.ByteCount
 		startLen := len(pl.frames)
-		pl.frames, pl.streamFrames, lengthAdded = p.framer.AppendStreamFrames(pl.frames, pl.streamFrames, maxPayloadSize-pl.length, v)
+		if f, ok := p.framer.(*framer); ok && p.coalesceSmallEarlyPackets && !ackAllowed {
+			pl.frames, pl.streamFrames, lengthAdded = f.appendStreamFrames(pl.frames, pl.streamFrames, maxPayloadSize-pl.length, 1, v)
+		} else {
+			pl.frames, pl.streamFrames, lengthAdded = p.framer.AppendStreamFrames(pl.frames, pl.streamFrames, maxPayloadSize-pl.length, v)
+		}
 		pl.length += lengthAdded
 		// Move STREAM_DATA_BLOCKED and DATA_BLOCKED frames in front of the DATAGRAM frames,
 		// such that the DATAGRAM frames remain the last frames.

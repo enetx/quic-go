@@ -47,6 +47,7 @@ type queuedStream struct {
 }
 
 type framer struct {
+	creationOrder    *streamCreationOrder
 	peerAckFrequency *peerAckFrequencySender // Owned by the connection loop, only active after the handshake.
 	mutex            sync.Mutex
 
@@ -96,6 +97,9 @@ func (f *framer) HasData() bool {
 
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
+	if f.creationOrder != nil {
+		return len(f.activeStreams) != 0 || len(f.retransmissionStreams) != 0
+	}
 
 	for urgency := range f.incrementalStreams {
 		if !f.incrementalStreams[urgency].Empty() || !f.nonIncrementalStreams[urgency].Empty() ||
@@ -137,6 +141,20 @@ func (f *framer) AppendStreamFrames(
 	maxLen protocol.ByteCount,
 	v protocol.Version,
 ) ([]ackhandler.Frame, []ackhandler.StreamFrame, protocol.ByteCount) {
+	return f.appendStreamFrames(frames, streamFrames, maxLen, protocol.MinStreamFrameSize, v)
+}
+
+// Packet-specific callers can permit small frames without changing the native
+// threshold for other packets. Stream writers enforce their actual header size.
+func (f *framer) appendStreamFrames(
+	frames []ackhandler.Frame,
+	streamFrames []ackhandler.StreamFrame,
+	maxLen, minimum protocol.ByteCount,
+	v protocol.Version,
+) ([]ackhandler.Frame, []ackhandler.StreamFrame, protocol.ByteCount) {
+	if f.creationOrder != nil {
+		return f.appendStreamFramesByCreation(frames, streamFrames, maxLen, minimum, v)
+	}
 	// STREAM_DATA_BLOCKED and DATA_BLOCKED frames that don't fit are queued as control frames
 	f.controlFrameMutex.Lock()
 
@@ -147,7 +165,7 @@ func (f *framer) AppendStreamFrames(
 retransmissions:
 	for urgency := range f.retransmissionQueue {
 		bucket := &f.retransmissionQueue[urgency]
-		for !bucket.Empty() && protocol.MinStreamFrameSize <= maxLen {
+		for !bucket.Empty() && minimum <= maxLen {
 			id := bucket.PeekFront()
 			str, ok := f.retransmissionStreams[id]
 			if !ok {
@@ -180,12 +198,12 @@ retransmissions:
 			streamFrameLen += sf.Frame.Length(v)
 		}
 	}
-	// pop STREAM frames, until less than 128 bytes are left in the packet
+	// Pop STREAM frames while the selected packet threshold permits it.
 	for urgency := range f.incrementalStreams {
 		numActiveStreams := f.incrementalStreams[urgency].Len() + f.nonIncrementalStreams[urgency].Len()
 
 		for range numActiveStreams {
-			if protocol.MinStreamFrameSize > maxLen {
+			if minimum > maxLen {
 				break
 			}
 			sf, blocked := f.getNextStreamFrame(maxLen, int8(urgency), v)
@@ -329,6 +347,11 @@ func (f *framer) AddActiveStream(id protocol.StreamID, str streamFrameGetter) {
 	if activeStr, ok := f.activeStreams[id]; ok && activeStr.generation == generation {
 		return
 	}
+	if f.creationOrder != nil {
+		f.recordStreamCreationLocked(id)
+		f.activeStreams[id] = queuedStream{streamFrameGetter: str, generation: generation}
+		return
+	}
 	if incremental {
 		f.incrementalStreams[urgency].PushBack(streamQueueEntry{id: id, generation: generation})
 	} else {
@@ -343,6 +366,11 @@ func (f *framer) AddStreamWithRetransmission(id protocol.StreamID, str streamFra
 
 	urgency, _, _ := str.priority()
 	if _, ok := f.retransmissionStreams[id]; ok {
+		return
+	}
+	if f.creationOrder != nil {
+		f.recordStreamCreationLocked(id)
+		f.retransmissionStreams[id] = str
 		return
 	}
 	f.retransmissionQueue[urgency].PushBack(id)
@@ -368,9 +396,18 @@ func (f *framer) RemoveActiveStream(id protocol.StreamID) {
 	// Instead, we check if the stream is still in active when appending STREAM frames.
 	delete(f.activeStreams, id)
 	delete(f.retransmissionStreams, id)
+	if f.creationOrder != nil {
+		if entry := f.creationOrder.entries[id]; entry != nil {
+			f.creationOrder.ids.Remove(entry)
+			delete(f.creationOrder.entries, id)
+		}
+	}
 }
 
 func (f *framer) UpdateStreamPriority(id protocol.StreamID) {
+	if f.creationOrder != nil {
+		return
+	}
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
@@ -493,6 +530,10 @@ func (f *framer) Handle0RTTRejection() {
 	}
 	clear(f.activeStreams)
 	clear(f.retransmissionStreams)
+	if f.creationOrder != nil {
+		clear(f.creationOrder.entries)
+		f.creationOrder.ids.Init()
+	}
 	clear(f.streamsWithControlFrames)
 
 	var j int

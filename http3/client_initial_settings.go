@@ -13,6 +13,9 @@ import (
 // stream and bytes; a second critical control stream is never opened.
 func (c *ClientConn) startInitialSettings(datagrams bool, settings g.MapOrd[uint64, uint64], nonblocking bool) {
 	finish := func(err error) {
+		if err == nil && c.rawConn.clientQPACK != nil {
+			err = c.rawConn.clientQPACK.stageEagerTypes()
+		}
 		c.initialSettingsErr = err
 		close(c.initialSettingsWritten)
 		if err != nil {

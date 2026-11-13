@@ -67,10 +67,11 @@ upstream; remove local mechanisms only when upstream supplies equivalent hooks.
 | Optional QPACK stream order, type timing and encoder capacity announcements | `http3/qpack_client.go` | one transport option, client setup, peer SETTINGS and request header/trailer hooks |
 | Ordered/additional client parameters and external GREASE | `transportparams/` | one field and return adapter in `internal/wire/transport_parameters.go` |
 | External TLS client | `tlsquic/` | client-only factory and error propagation in `internal/handshake/crypto_setup.go` |
-| Initial SETTINGS before request writes / optional first-flight staging | `http3/client_settings.go`, `http3/client_initial_settings.go` | readiness channel, nonblocking control preparation and per-dial application-ready callback |
+| Initial SETTINGS before request writes / optional first-flight staging | `http3/client_settings.go`, `http3/client_initial_settings.go`, `early_data_ready.go` | readiness channels, nonblocking control/QPACK-type preparation and per-dial application/early-ready callbacks |
 | HTTP/3 ordering and priority | `http3/` custom files and existing small hooks | see `http3/UPSTREAM.md` |
 | First HTTP/3 body read and cancellation of blocked uploads | `http3/request_body_reads.go` | optional wire callback, validated header collection and body-copy hooks |
 | Encoded packet-number length, temporary coalescing-budget snapshots and recovery-driven ACK-only probes | `packet_policy.go`, `internal/ackhandler/client_packet_policy.go` | send-handler length/MTU/Retry hooks, coalesced/PTO packing and short-header reset; policy stays outside the engine |
+| Optional early-data send boundaries, small protected tails and creation-order stream service | `early_data_ready.go`, `stream_creation_scheduling.go` | restored-parameter readiness, one send-loop hook, per-packet STREAM threshold and normal Initial coalescing guard; one creation hook in the stream flow-controller factory |
 | Optional Initial datagram padding, separated handshake ACK flight and NEW_CONNECTION_ID order | `initial_datagram_padding.go`, `connection_id_frame_order.go` | client packer options, Initial padding accounting and a control-queue ordering branch |
 | Optional client Initial protection, address-based packet size, ACK-only PING and receive-credit batching | `initial_packet_protection.go`, `client_handshake.go` | packet serialization/handshake hooks, per-client flow-controller divisor; no browser defaults |
 | Optional ordered Initial CRYPTO ranges with live packet budgets | `initial_crypto_layout.go` | client configuration, Initial stream buffering, existing protection queues and one pre-serialization preparation step; native recovery retained |
@@ -98,6 +99,23 @@ legitimate pre-request transport retry. Stream cancellation completion waits
 use the integration suite's time scale and retain all cancellation assertions.
 
 ## Audit and update
+
+Early staging uses `OnEarlyDataReady` only when configured. By default its
+bounded, nonblocking writes can share the Initial flight. `FlushEarlyData`
+instead gives currently sendable Initial CRYPTO and setup data separate send
+opportunities before publishing the connection. Pacing, congestion and queue
+limits are never bypassed. Nil callbacks preserve native readiness. HTTP/3
+chains callbacks from cloned configurations and shares one connection owner.
+
+`CoalesceSmallEarlyPackets` relaxes the 128-byte heuristics only for 0-RTT;
+actual long-header, AEAD, sample and frame sizes still bound writes.
+`InitialCryptoCoalescingBarrier` also prevents later spaces sharing an Initial
+while more Initial CRYPTO is queued. Both default off.
+`StreamSchedulingByCreation` replaces local urgency/incremental service with
+open-stream creation order, while preserving retransmission precedence and
+skipping credit-blocked streams. Its linked state contains IDs only and is
+removed on completion or 0-RTT rejection. Other connections keep native queues.
+These are generic opt-in mechanisms; all browser selections remain in Surf.
 
 `python3 scripts/upstream.py audit` compares with the pinned Git source after
 normalizing module/HTTP imports and gofmt. `audit --patch` shows the substantive

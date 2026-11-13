@@ -207,12 +207,18 @@ across fresh QPACK connections. No browser values or TLS fork are added here.
 ## Initial control-stream staging
 
 `WireConfig.CoalesceInitialSettings` optionally creates the client from a per-dial
-`OnApplicationReady` callback before the QUIC handshake channel is released. The
+`OnApplicationReady` callback before the QUIC handshake channel is released. With
+restored early keys it also prepares that same owner from `OnEarlyDataReady`,
+before Initial packetization. `FlushEarlySettings` selects the alternative early
+flush boundary after sendable Initial data. The
 caller configuration is cloned and its callback is chained. `sync.Once` shares
 exactly one client between this callback and `Dial` / `DialEarly` completion.
 The constructor reserves its control/QPACK streams once and tries a nonblocking
 SETTINGS+reserved-frame write. Insufficient flow-control credit hands the same
 stream and bytes to an asynchronous writer; cancellation releases that writer.
+Eager QPACK type bytes are staged in their configured order before the readiness
+channel wakes either instruction writer. A staged prefix is not sent twice;
+missing stream credit retains the existing asynchronous owner.
 Failures are published through the existing readiness channel. Nil/default wire
 configuration retains asynchronous startup. Custom dialers and early-data
 acceptance/rejection are covered alongside native startup tests.
