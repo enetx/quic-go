@@ -3,6 +3,7 @@ package http3
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 
 	"github.com/enetx/http"
@@ -19,6 +20,8 @@ type earlyRestartClient struct {
 	rejected atomic.Bool
 	staged   atomic.Bool
 	ready    chan struct{}
+	mu       sync.Mutex // serializes pool retirement with generation replacement
+	retired  bool
 }
 
 func newEarlyRestartClient(client *ClientConn, factory func() *ClientConn) *earlyRestartClient {
@@ -36,9 +39,23 @@ func (c *earlyRestartClient) reject() {
 
 func (c *earlyRestartClient) applicationReady() {
 	if c.rejected.Load() && c.staged.CompareAndSwap(false, true) {
-		c.current.Store(c.factory())
+		c.mu.Lock()
+		client := c.factory()
+		if c.retired {
+			client.retire()
+		}
+		c.current.Store(client)
 		close(c.ready)
+		c.mu.Unlock()
 	}
+}
+
+func (c *earlyRestartClient) retire() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.retired = true
+	c.current.Load().retire()
 }
 
 func (c *earlyRestartClient) active(ctx context.Context) (*ClientConn, error) {

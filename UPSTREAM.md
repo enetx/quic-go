@@ -763,3 +763,18 @@ the existing frame-getter interface. `framer_packet_budget_test.go` checks both
 schedulers, new/retransmitted data, nonzero offsets, tiny/varint-boundary budgets
 and delivery without lost or repeated bytes. The preceding code emits 65 bytes
 for a 64-byte budget in the deterministic regression.
+
+### Explicit HTTP/3 pool retirement
+
+`http3/transport_retirement.go` adds generic `Transport.RetireConnections`.
+It removes current exact/coalesced owners, cancels pending handshakes, preserves
+active streams, then closes each drained connection. TLS caches and future
+transport use remain intact. `rawConn.trackStream` serializes retirement against
+new request tracking; the successful streams-empty hook handles final closure.
+`earlyRestartClient` carries retirement through rejected-generation replacement.
+No browser profile, network observer, timing constant or additional interface is
+part of this mechanism. Existing Close retains ownership of every retired client.
+
+`http3/transport_retirement_test.go` covers active bodies, idle/pending owners,
+cross-origin reuse, genuine critical errors and both replacement/retirement
+orderings after an early-generation rejection.

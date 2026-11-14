@@ -210,7 +210,12 @@ func (c *ClientConn) openRequestStream(
 	}
 
 	c.setStreamPriority(ctx, str)
-	hstr := c.rawConn.TrackStream(str)
+	hstr := c.rawConn.trackStream(str, true)
+	if hstr == nil {
+		str.CancelRead(quic.StreamErrorCode(ErrCodeRequestCanceled))
+		str.CancelWrite(quic.StreamErrorCode(ErrCodeRequestCanceled))
+		return nil, errGoAway
+	}
 	decoder := bindFieldDecoder(c.decoder, c.rawConn, ctx, hstr, c.maxResponseHeaderBytes)
 	rsp := &http.Response{}
 	trace := httptrace.ContextClientTrace(ctx)
@@ -303,7 +308,21 @@ func (c *ClientConn) onStreamsEmpty() {
 	defer c.streamMx.Unlock()
 
 	// The server is performing a graceful shutdown.
-	if c.maxStreamID != invalidStreamID {
+	if c.maxStreamID != invalidStreamID || c.rawConn.retiring.Load() {
+		c.rawConn.CloseWithError(quic.ApplicationErrorCode(ErrCodeNoError), "")
+	}
+}
+
+// retire stops admission atomically with stream tracking. Active response bodies
+// retain their connection until the last stream ends; no GOAWAY is sent.
+func (c *ClientConn) retire() {
+	c.rawConn.streamMx.Lock()
+	c.rawConn.retiring.Store(true)
+	c.goAwayCancel()
+	idle := len(c.rawConn.streams) == 0
+	c.rawConn.streamMx.Unlock()
+
+	if idle {
 		c.rawConn.CloseWithError(quic.ApplicationErrorCode(ErrCodeNoError), "")
 	}
 }

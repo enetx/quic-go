@@ -40,6 +40,7 @@ type rawConn struct {
 
 	streamMx sync.Mutex
 	streams  map[quic.StreamID]*stateTrackingStream
+	retiring atomic.Bool
 
 	rcvdControlStr      atomic.Bool
 	rcvdQPACKEncoderStr atomic.Bool
@@ -161,12 +162,19 @@ func (c *rawConn) prepareControlStream(settings *settingsFrame) (*quic.SendStrea
 }
 
 func (c *rawConn) TrackStream(str *quic.Stream) *stateTrackingStream {
+	return c.trackStream(str, false)
+}
+
+func (c *rawConn) trackStream(str *quic.Stream, rejectRetired bool) *stateTrackingStream {
 	hstr := newStateTrackingStream(str, c, func(b []byte) error { return c.sendDatagram(str.StreamID(), b) })
 	hstr.qpackCancel = c.qpackCancellation(str.StreamID())
 
 	c.streamMx.Lock()
+	defer c.streamMx.Unlock()
+	if rejectRetired && c.retiring.Load() {
+		return nil
+	}
 	c.streams[str.StreamID()] = hstr
-	c.streamMx.Unlock()
 	return hstr
 }
 
