@@ -18,7 +18,7 @@ func (c *ClientConn) startInitialSettings(datagrams bool, settings g.MapOrd[uint
 		}
 		c.initialSettingsErr = err
 		close(c.initialSettingsWritten)
-		if err != nil {
+		if err != nil && !errors.Is(err, quic.Err0RTTRejected) {
 			if c.logger != nil {
 				c.logger.Debug("setting up connection failed", "error", err)
 			}

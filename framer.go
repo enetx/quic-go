@@ -10,7 +10,6 @@ import (
 	"github.com/enetx/quic-go/internal/utils/minheap"
 	"github.com/enetx/quic-go/internal/utils/ringbuffer"
 	"github.com/enetx/quic-go/internal/wire"
-	"github.com/enetx/quic-go/quicvarint"
 )
 
 const (
@@ -179,8 +178,7 @@ retransmissions:
 				continue
 			}
 			// For the last STREAM frame, we'll remove the DataLen field later.
-			frameMaxLen := maxLen + protocol.ByteCount(quicvarint.Len(uint64(maxLen)))
-			sf, hasMoreRetransmissions := str.popRetransmissionFrame(frameMaxLen, v)
+			sf, hasMoreRetransmissions := popRetransmissionFrameForPacket(str, maxLen, v)
 			if !hasMoreRetransmissions {
 				bucket.PopFront()
 				delete(f.retransmissionStreams, id)
@@ -502,11 +500,7 @@ func (f *framer) popStreamFrame(
 	maxLen protocol.ByteCount,
 	v protocol.Version,
 ) (ackhandler.StreamFrame, *wire.StreamDataBlockedFrame, bool) {
-	// For the last STREAM frame, we'll remove the DataLen field later.
-	// Therefore, we can pretend to have more bytes available when popping
-	// the STREAM frame (which will always have the DataLen set).
-	maxLen += protocol.ByteCount(quicvarint.Len(uint64(maxLen)))
-	frame, blocked, hasMoreData := str.popStreamFrame(maxLen, v)
+	frame, blocked, hasMoreData := popStreamFrameForPacket(str.streamFrameGetter, maxLen, v)
 	if !hasMoreData {
 		delete(f.activeStreams, id)
 	}

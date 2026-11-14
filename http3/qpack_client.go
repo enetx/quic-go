@@ -220,7 +220,7 @@ func (s *clientQPACKStream) run() {
 		err := s.write(data)
 		s.writeMutex.Unlock()
 		if err != nil {
-			if ctx.Err() == nil {
+			if ctx.Err() == nil && !errors.Is(err, quic.Err0RTTRejected) {
 				s.owner.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "QPACK send stream write failed")
 			}
 			return

@@ -355,7 +355,19 @@ func (s *SendStream) canBufferStreamFrame() bool {
 // hasMoreData says if more data can be sent after this call without first
 // receiving a MAX_STREAM_DATA frame.
 func (s *SendStream) popStreamFrame(maxBytes protocol.ByteCount, v protocol.Version) (_ ackhandler.StreamFrame, _ *wire.StreamDataBlockedFrame, hasMoreData bool) {
+	return s.popStreamFrameWithLimit(maxBytes, v, false)
+}
+
+func (s *SendStream) popStreamFrameWithLimit(
+	maxBytes protocol.ByteCount,
+	v protocol.Version,
+	implicitLength bool,
+) (_ ackhandler.StreamFrame, _ *wire.StreamDataBlockedFrame, hasMoreData bool) {
 	s.mutex.Lock()
+	if implicitLength {
+		header := wire.StreamFrame{StreamID: s.streamID, Offset: s.writeOffset, DataLenPresent: true}
+		maxBytes = streamPacketSizeWithLength(maxBytes, &header, v)
+	}
 	f, blocked, hasMoreData := s.popNewStreamFrameForPacket(maxBytes, v)
 	var handler ackhandler.FrameHandler
 	if f != nil {
@@ -393,13 +405,17 @@ func (s *SendStream) popNewStreamFrameForPacket(maxBytes protocol.ByteCount, v p
 
 	if len(s.dataForWriting) == 0 && s.nextFrame == nil {
 		if s.finishedWriting && !s.finSent {
-			s.finSent = true
-			return &wire.StreamFrame{
+			fin := &wire.StreamFrame{
 				StreamID:       s.streamID,
 				Offset:         s.writeOffset,
 				DataLenPresent: true,
 				Fin:            true,
-			}, nil, false
+			}
+			if fin.Length(v) > maxBytes {
+				return nil, nil, true
+			}
+			s.finSent = true
+			return fin, nil, false
 		}
 		return nil, nil, false
 	}
@@ -523,6 +539,14 @@ func (s *SendStream) newPooledStreamFrame(offset protocol.ByteCount, data []byte
 }
 
 func (s *SendStream) popRetransmissionFrame(maxBytes protocol.ByteCount, v protocol.Version) (_ ackhandler.StreamFrame, hasMore bool) {
+	return s.popRetransmissionFrameWithLimit(maxBytes, v, false)
+}
+
+func (s *SendStream) popRetransmissionFrameWithLimit(
+	maxBytes protocol.ByteCount,
+	v protocol.Version,
+	implicitLength bool,
+) (_ ackhandler.StreamFrame, hasMore bool) {
 	s.mutex.Lock()
 	if s.recovery != nil {
 		s.recovery.coalesceQueue(s)
@@ -532,6 +556,9 @@ func (s *SendStream) popRetransmissionFrame(maxBytes protocol.ByteCount, v proto
 		return ackhandler.StreamFrame{}, false
 	}
 	f := s.retransmissionQueue[0]
+	if implicitLength {
+		maxBytes = streamPacketSizeWithLength(maxBytes, f, v)
+	}
 	newFrame, needsSplit := f.MaybeSplitOffFrame(maxBytes, v)
 	if needsSplit {
 		f = newFrame

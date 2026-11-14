@@ -6,7 +6,6 @@ import (
 	"github.com/enetx/quic-go/internal/ackhandler"
 	"github.com/enetx/quic-go/internal/protocol"
 	"github.com/enetx/quic-go/internal/wire"
-	"github.com/enetx/quic-go/quicvarint"
 )
 
 // Protected by framer.mutex. Completion removes entries; an idle open stream
@@ -85,7 +84,7 @@ func (f *framer) appendStreamFramesByCreation(frames []ackhandler.Frame, streams
 		id := entry.Value.(protocol.StreamID)
 		if str := f.retransmissionStreams[id]; str != nil {
 			for maxLen >= minimum {
-				frame, more := str.popRetransmissionFrame(maxLen+protocol.ByteCount(quicvarint.Len(uint64(maxLen))), v)
+				frame, more := popRetransmissionFrameForPacket(str, maxLen, v)
 				if !more {
 					delete(f.retransmissionStreams, id)
 				}

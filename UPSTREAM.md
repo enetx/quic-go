@@ -738,3 +738,28 @@ and `connection_retirement.go`. Transport hooks only publish one shared start
 event, reject a pending ready-only probe, and retain active retired owners.
 See [HTTP/3 maintenance](http3/UPSTREAM.md#connection-readiness-and-retirement).
 Browser delay and request-admission policies remain entirely in Surf.
+
+## Small early packets and rejected critical streams
+
+A FIN-only send frame validates its complete header against the available byte
+budget before consuming FIN state. This keeps small coalesced tails within the
+path limit and leaves an unsent FIN queued. `send_stream_packet_budget_test.go`
+checks IDs/offset varint boundaries and exactly-once FIN; the packet packer
+regression reproduces the original 1253-versus-1252 failure deterministically.
+No browser frame layout or padding value is added to the engine.
+
+HTTP/3 control and QPACK workers distinguish `Err0RTTRejected` from critical
+stream failure, including before the accept loop publishes generation retirement.
+They retain the original rejection for normal application retry/restart handling;
+genuine stream failures still close the connection. The gated trusted-TLS
+regression confirms resumed TLS, rejected early data and a live QUIC connection.
+Both regressions fail against the preceding published source tree.
+
+The small-tail framer also sizes the omitted STREAM length from the actual
+stream-ID/offset header and data capacity, under the stream lock. Using the
+varint width of the entire remaining packet budget overestimates the saving at
+64-byte boundaries. `stream_packet_budget.go` isolates the mechanism and retains
+the existing frame-getter interface. `framer_packet_budget_test.go` checks both
+schedulers, new/retransmitted data, nonzero offsets, tiny/varint-boundary budgets
+and delivery without lost or repeated bytes. The preceding code emits 65 bytes
+for a 64-byte budget in the deterministic regression.

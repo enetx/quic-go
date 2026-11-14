@@ -68,11 +68,17 @@ func (c *rawConn) writeQPACKFeedback(feedback <-chan []byte) {
 				return
 			}
 			if _, err = stream.Write(quicvarint.Append(nil, streamTypeQPACKDecoderStream)); err != nil {
+				if errors.Is(err, quic.Err0RTTRejected) {
+					return
+				}
 				c.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "QPACK decoder stream write failed")
 				return
 			}
 		}
 		if _, err := stream.Write(data); err != nil {
+			if errors.Is(err, quic.Err0RTTRejected) {
+				return
+			}
 			c.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "QPACK decoder stream write failed")
 			return
 		}
@@ -89,7 +95,7 @@ func (c *rawConn) handleQPACKStream(stream *quic.ReceiveStream, encoder bool) {
 	} else {
 		err = dynamic.ReadDecoder(stream)
 	}
-	if c.context().Err() != nil {
+	if c.context().Err() != nil || errors.Is(err, quic.Err0RTTRejected) {
 		return
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {

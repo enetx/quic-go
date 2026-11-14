@@ -177,3 +177,56 @@ func TestSmallEarlyTailKeepsDatagramForTheNextFullPacket(t *testing.T) {
 	require.Equal(t, data, full.longHdrPackets[0].frames[0].Frame.(*wire.DatagramFrame).Data)
 	require.Nil(t, tp.datagramQueue.Peek())
 }
+
+func TestSmallEarlyTailDefersFINThatCannotFit(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	tc := newClientTestConnection(t, ctrl, nil, true)
+	tc.conn.framer.enableStreamCreationOrder()
+	tc.conn.restoreTransportParameters(&wire.TransportParameters{
+		ActiveConnectionIDLimit:        2,
+		InitialMaxData:                 4096,
+		InitialMaxStreamDataUni:        1024,
+		InitialMaxStreamDataBidiRemote: 1024,
+		MaxUniStreamNum:                3,
+		MaxBidiStreamNum:               3,
+	})
+	control, err := tc.conn.OpenUniStream()
+	require.NoError(t, err)
+	require.NoError(t, control.TryWriteAll(make([]byte, 128)))
+	request, err := tc.conn.OpenStream()
+	require.NoError(t, err)
+	require.NoError(t, request.Close())
+
+	tp := newTestPacketPacker(t, ctrl, protocol.PerspectiveClient)
+	tp.packer.framer = tc.conn.framer
+	tp.packer.coalesceSmallEarlyPackets = true
+	tp.packer.srcConnID = protocol.ParseConnectionID(make([]byte, 11))
+	tp.packer.getDestConnID = func() protocol.ConnectionID {
+		return protocol.ParseConnectionID([]byte{1, 2, 3})
+	}
+	tp.initialStream.scramble = false
+	_, err = tp.initialStream.Write(make([]byte, 1052))
+	require.NoError(t, err)
+	tp.sealingManager.EXPECT().GetInitialSealer().Return(newMockShortHeaderSealer(ctrl), nil)
+	tp.sealingManager.EXPECT().GetHandshakeSealer().Return(nil, handshake.ErrKeysNotYetAvailable)
+	tp.sealingManager.EXPECT().Get1RTTSealer().Return(nil, handshake.ErrKeysNotYetAvailable)
+	tp.sealingManager.EXPECT().Get0RTTSealer().Return(newMockShortHeaderSealer(ctrl), nil)
+	tp.ackFramer.EXPECT().GetAckFrame(protocol.EncryptionInitial, gomock.Any(), false).Return(nil)
+	tp.pnManager.EXPECT().PeekPacketNumber(protocol.PacketNumberSpaceInitial).
+		Return(protocol.PacketNumber(0), protocol.PacketNumberLen1)
+	tp.pnManager.EXPECT().PopPacketNumber(protocol.PacketNumberSpaceInitial).Return(protocol.PacketNumber(0))
+	tp.pnManager.EXPECT().PeekPacketNumber(protocol.PacketNumberSpaceAppData).
+		Return(protocol.PacketNumber(0), protocol.PacketNumberLen1)
+	tp.pnManager.EXPECT().PopPacketNumber(protocol.PacketNumberSpaceAppData).Return(protocol.PacketNumber(0))
+
+	packet, err := tp.packer.PackCoalescedPacket(false, 1252, monotime.Now(), protocol.Version1)
+	require.NoError(t, err)
+	require.LessOrEqual(t, packet.buffer.Len(), protocol.ByteCount(1252))
+	frames, rest := parsePacket(t, packet.buffer.Data)
+	require.Len(t, frames, 2)
+	require.Empty(t, rest)
+	_, streams, _ := tc.conn.framer.appendStreamFrames(nil, nil, 100, 1, protocol.Version1)
+	require.Len(t, streams, 1)
+	require.Equal(t, request.StreamID(), streams[0].Frame.StreamID)
+	require.True(t, streams[0].Frame.Fin, "a FIN that did not fit must remain queued")
+}

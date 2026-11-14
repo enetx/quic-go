@@ -206,7 +206,9 @@ func (w *clientControlWriter) run(stream *quic.SendStream) {
 			err = io.ErrShortWrite
 		}
 		if err != nil {
-			w.owner.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "control stream write failed")
+			if !errors.Is(err, quic.Err0RTTRejected) && w.owner.context().Err() == nil {
+				w.owner.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "control stream write failed")
+			}
 			return false
 		}
 		return true
@@ -223,7 +225,12 @@ func (w *clientControlWriter) run(stream *quic.SendStream) {
 		case <-w.owner.context().Done():
 			return
 		case <-stream.Context().Done():
-			w.owner.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "control stream closed")
+			// Rejection retires the early stream generation before the raw
+			// connection's accept loop necessarily publishes the same cause.
+			if !errors.Is(context.Cause(stream.Context()), quic.Err0RTTRejected) &&
+				w.owner.context().Err() == nil {
+				w.owner.CloseWithError(quic.ApplicationErrorCode(ErrCodeClosedCriticalStream), "control stream closed")
+			}
 			return
 		case data := <-w.queue:
 			ok := write(data.data, data.recorded)
