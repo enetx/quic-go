@@ -22,6 +22,106 @@ type cacheMissBody struct{ reads, closes int }
 func (b *cacheMissBody) Read([]byte) (int, error) { b.reads++; return 0, io.EOF }
 func (b *cacheMissBody) Close() error             { b.closes++; return nil }
 
+func TestReadyCacheProbeDoesNotJoinPendingDialOrTakeBody(t *testing.T) {
+	started := make(chan struct{})
+	transport := &Transport{Dial: func(ctx context.Context, _ string, _ *tls.Config, _ *quic.Config) (*quic.Conn, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, context.Cause(ctx)
+	}}
+	defer transport.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	prepared := make(chan error, 1)
+	go func() { prepared <- transport.Preconnect(ctx, "localhost:443") }()
+	<-started
+	body := new(cacheMissBody)
+	request, err := http.NewRequestWithContext(t.Context(), "POST", "https://localhost/", body)
+	require.NoError(t, err)
+	response, err := transport.RoundTripCachedReady(request)
+	require.Nil(t, response)
+	require.ErrorIs(t, err, ErrNoCachedConn)
+	require.Zero(t, body.reads)
+	require.Zero(t, body.closes)
+
+	// The existing API retains its ability to join a pending pooled dial.
+	legacyContext, cancelLegacy := context.WithCancel(t.Context())
+	legacyDone := make(chan error, 1)
+	go func() {
+		_, err := transport.RoundTripCached(request.WithContext(legacyContext))
+		legacyDone <- err
+	}()
+	require.Eventually(t, func() bool {
+		transport.mutex.Lock()
+		defer transport.mutex.Unlock()
+		return transport.clients["localhost:443"].useCount.Load() == 2
+	}, time.Second, time.Millisecond)
+	cancelLegacy()
+	require.ErrorIs(t, <-legacyDone, context.Canceled)
+	require.Zero(t, body.reads)
+	require.Equal(t, 1, body.closes)
+	cancel()
+	require.ErrorIs(t, <-prepared, context.Canceled)
+}
+
+func TestDrainingPoolOwnerKeepsActiveBodyAndClosesWithTransport(t *testing.T) {
+	for _, closeAll := range []bool{false, true} {
+		t.Run(map[bool]string{false: "idle cleanup", true: "full close"}[closeAll], func(t *testing.T) {
+			transport, port, dials := reuseTestTransport(t)
+			address := "localhost:" + port
+			response := reuseRequest(t, transport, address, false)
+			defer response.Body.Close()
+			old := transport.clients[address]
+			nativeClient(old.clientConn).goAwayCancel()
+			require.NoError(t, transport.Preconnect(t.Context(), address))
+			require.EqualValues(t, 2, dials.Load())
+			require.Contains(t, transport.retired, old)
+			require.NotSame(t, old, transport.clients[address])
+			if closeAll {
+				require.NoError(t, transport.Close())
+				require.Error(t, old.conn.Context().Err(), "full close must retain ownership of drained sessions")
+				return
+			}
+			transport.CloseIdleConnections()
+			require.NoError(t, old.conn.Context().Err(), "a draining session's active response still owns its connection")
+			body, err := io.ReadAll(response.Body)
+			require.NoError(t, err)
+			require.Equal(t, address, string(body))
+			require.NoError(t, response.Body.Close())
+			transport.CloseIdleConnections()
+			require.Error(t, old.conn.Context().Err())
+		})
+	}
+}
+
+func TestHasCachedConnectionUsesExactConfirmedPoolPartition(t *testing.T) {
+	tr, port, dials := reuseTestTransport(t)
+	type partitionKey struct{}
+	tr.ConnectionPoolPartition = func(ctx context.Context, _ string) string {
+		value, _ := ctx.Value(partitionKey{}).(string)
+		return value
+	}
+	first := context.WithValue(t.Context(), partitionKey{}, "first")
+	other := context.WithValue(t.Context(), partitionKey{}, "other")
+	address := "localhost:" + port
+	require.False(t, tr.HasCachedConnection(first, address))
+	require.Zero(t, dials.Load())
+	require.NoError(t, tr.Preconnect(first, address))
+	require.True(t, tr.HasCachedConnection(first, address))
+	require.False(t, tr.HasCachedConnection(other, address))
+	require.False(t, tr.HasCachedConnection(first, "invalid-address"))
+	require.EqualValues(t, 1, dials.Load())
+
+	canceled, cancel := context.WithCancel(first)
+	cancel()
+	require.False(t, tr.HasCachedConnection(canceled, address))
+	key, _ := tr.clientPoolKey(first, address)
+	nativeClient(tr.clients[key].clientConn).goAwayCancel()
+	require.False(t, tr.HasCachedConnection(first, address), "GOAWAY retires the exact session")
+	require.NoError(t, tr.Close())
+	require.False(t, tr.HasCachedConnection(first, address))
+}
+
 func TestRoundTripCachedMissPreservesRequestBodyOwnership(t *testing.T) {
 	tr := &Transport{Dial: func(context.Context, string, *tls.Config, *quic.Config) (*quic.Conn, error) {
 		t.Error("cache probe dialed")

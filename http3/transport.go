@@ -36,7 +36,8 @@ type Settings struct {
 
 // RoundTripOpt contains options for [Transport.RoundTripOpt].
 type RoundTripOpt struct {
-	allowRetryDial bool // RoundTripCached preserves ownership only on an initial cache miss.
+	allowRetryDial   bool // RoundTripCached preserves ownership only on an initial cache miss.
+	requireConfirmed bool // The cache-only probe must not wait for a pending connection.
 	// OnlyCachedConn controls whether the Transport may create a new QUIC connection.
 	// If true and no cached connection is available, [Transport.RoundTripOpt] returns [ErrNoCachedConn].
 	OnlyCachedConn bool
@@ -49,14 +50,16 @@ type clientConn interface {
 }
 
 type roundTripperWithCount struct {
-	poolKey    string
-	partition  string
-	authority  string
-	cancel     context.CancelFunc
-	dialing    chan struct{} // closed as soon as quic.Dial(Early) returned
-	dialErr    error
-	conn       *quic.Conn
-	clientConn clientConn
+	poolKey          string
+	partition        string
+	authority        string
+	cancel           context.CancelFunc
+	dialing          chan struct{} // closed as soon as quic.Dial(Early) returned
+	connectStarted   chan struct{}
+	connectStartOnce sync.Once
+	dialErr          error
+	conn             *quic.Conn
+	clientConn       clientConn
 
 	useCount atomic.Int64
 }
@@ -143,6 +146,7 @@ type Transport struct {
 	newClientConn func(*quic.Conn) clientConn
 
 	clients        map[string]*roundTripperWithCount
+	retired        map[*roundTripperWithCount]struct{}
 	transport      *quic.Transport
 	closed         bool
 	clientSessions sync.Map // *quic.Conn -> *clientSettingsSession
@@ -266,6 +270,10 @@ func (t *Transport) doRoundTripOpt(req *http.Request, opt RoundTripOpt, isRetrie
 	if err != nil {
 		return nil, err
 	}
+	if opt.requireConfirmed && !reusableClient(cl) {
+		cl.useCount.Add(-1)
+		return nil, ErrNoCachedConn
+	}
 	defer cl.useCount.Add(-1)
 
 	select {
@@ -305,6 +313,7 @@ func (t *Transport) doRoundTripOpt(req *http.Request, opt RoundTripOpt, isRetrie
 		}
 		if opt.allowRetryDial {
 			opt.OnlyCachedConn = false
+			opt.requireConfirmed = false
 		}
 		return t.doRoundTripOpt(req, opt, true)
 	}
@@ -365,6 +374,10 @@ func (t *Transport) getClientForHost(ctx context.Context, hostname string, onlyC
 	}
 
 	cl, ok := t.clients[key]
+	if ok && !onlyCached && retiredClient(cl) {
+		t.retireClientLocked(cl)
+		cl, ok = nil, false
+	}
 	if !ok {
 		if onlyCached {
 			return nil, false, ErrNoCachedConn
@@ -374,9 +387,13 @@ func (t *Transport) getClientForHost(ctx context.Context, hostname string, onlyC
 		ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 		cl = &roundTripperWithCount{
 			poolKey: key, partition: partition, authority: hostname,
-			dialing: make(chan struct{}),
-			cancel:  cancel,
+			dialing:        make(chan struct{}),
+			connectStarted: make(chan struct{}),
+			cancel:         cancel,
 		}
+		ctx = context.WithValue(ctx, connectionStartedKey{}, func() {
+			cl.connectStartOnce.Do(func() { close(cl.connectStarted) })
+		})
 		go func() {
 			defer close(cl.dialing)
 			defer cancel()
@@ -434,6 +451,7 @@ func (t *Transport) dial(ctx context.Context, hostname string) (*quic.Conn, clie
 				return nil, err
 			}
 			trace := httptrace.ContextClientTrace(ctx)
+			NotifyConnectionStarted(ctx)
 			traceConnectStart(trace, network, udpAddr.String())
 			traceTLSHandshakeStart(trace)
 			conn, err := t.transport.DialEarly(ctx, udpAddr, tlsCfg, cfg)
@@ -590,9 +608,7 @@ func (t *Transport) removeClient(client *roundTripperWithCount) {
 	if t.clients == nil {
 		return
 	}
-	if t.clients[client.poolKey] == client {
-		delete(t.clients, client.poolKey)
-	}
+	t.retireClientLocked(client)
 }
 
 // NewClientConn creates a new HTTP/3 client connection on top of a QUIC connection.
@@ -636,6 +652,12 @@ func (t *Transport) Close() error {
 		}
 	}
 	t.clients = nil
+	for client := range t.retired {
+		if err := client.Close(); err != nil {
+			return err
+		}
+	}
+	t.retired = nil
 	if t.transport != nil {
 		if err := t.transport.Close(); err != nil {
 			return err
@@ -677,6 +699,12 @@ func (t *Transport) CloseIdleConnections() {
 		if cl.useCount.Load() == 0 && !hasActiveClientStreams(cl) {
 			cl.Close()
 			delete(t.clients, hostname)
+		}
+	}
+	for cl := range t.retired {
+		if cl.useCount.Load() == 0 && !hasActiveClientStreams(cl) {
+			cl.Close()
+			delete(t.retired, cl)
 		}
 	}
 }

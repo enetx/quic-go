@@ -330,3 +330,27 @@ The narrow implementation lives in `connection_reuse.go`, `control_frame.go`
 and `response_progress.go`, with small transport/parser hooks. Real QUIC tests
 cover ownership, partitions, cancellation, closure, GOAWAY, active bodies,
 preconnect, callback errors, informational responses and truncated extensions.
+
+## Connection readiness and retirement
+
+`HasCachedConnection` inspects an exact partition's confirmed, live connection
+without DNS, dialing or reuse callbacks. `RoundTripCachedReady` additionally
+permits the normal authorized cross-authority lookup, but never joins a pending
+dial or an early-only connection. An exact cache miss leaves the request body
+caller-owned. Existing `RoundTripCached` keeps its pending-dial behavior.
+
+`PreconnectWithOptions` adds a per-waiter connection-start observer and selects
+early or authenticated readiness. Start notification belongs to the actual
+shared pool dial, so later waiters observe a start already reported. The default
+dialer reports after DNS; custom dialers call `NotifyConnectionStarted` after
+DNS/socket preparation and before QUIC dialing. Callbacks run outside pool
+locks. Failure, cancellation and shared ownership follow existing preconnect
+rules; no browser timer or policy value is embedded here.
+
+A normal lookup retires a drained or closed exact owner before preparing its
+replacement. Drained live owners remain transport-owned while their response
+streams are active. Idle cleanup preserves those streams; full Close closes
+retired owners too. Ended owners are removed by context completion callbacks.
+Temporary early-data protocol restarts are not GOAWAY. Keep the real-connection
+readiness, partition, shared-start, cancellation, active-body and closure tests
+when updating upstream.

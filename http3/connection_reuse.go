@@ -2,11 +2,31 @@ package http3
 
 import (
 	"context"
+	"net"
 	"slices"
 
 	"github.com/enetx/http"
 	"github.com/enetx/quic-go"
 )
+
+// HasCachedConnection reports whether address has a confirmed reusable session
+// in this context's exact pool partition. It does not dial, resolve aliases,
+// reserve a request or invoke the cross-origin reuse policy. The result is a
+// snapshot: normal request admission still handles concurrent closure/GOAWAY.
+func (t *Transport) HasCachedConnection(ctx context.Context, address string) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if _, _, err := net.SplitHostPort(address); err != nil {
+		return false
+	}
+
+	key, _ := t.clientPoolKey(ctx, address)
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	client := t.clients[key]
+	return !t.closed && client != nil && reusableClient(client)
+}
 
 // ConnectionReuseInfo describes a candidate owned by this transport's pool.
 // Authority and OriginalAuthority are canonical host:port pairs. Conn remains
@@ -147,6 +167,23 @@ func (t *Transport) clientPoolKey(ctx context.Context, authority string) (key, p
 // attempt starts, normal retry rules may establish a dedicated connection.
 func (t *Transport) RoundTripCached(req *http.Request) (*http.Response, error) {
 	response, err := t.roundTripOpt(req, RoundTripOpt{OnlyCachedConn: true, allowRetryDial: true})
+	if err != nil && err != ErrNoCachedConn && req.Body != nil {
+		req.Body.Close()
+	}
+	return response, err
+}
+
+// RoundTripCachedReady uses only a confirmed reusable connection for the first
+// attempt. A pending dial, early-only readiness or GOAWAY is an ErrNoCachedConn
+// miss without waiting or taking body ownership. Normal retry rules can dial
+// after a confirmed initial attempt has started. RoundTripCached retains its
+// existing behavior of joining pending cached attempts.
+func (t *Transport) RoundTripCachedReady(req *http.Request) (*http.Response, error) {
+	response, err := t.roundTripOpt(req, RoundTripOpt{
+		OnlyCachedConn:   true,
+		allowRetryDial:   true,
+		requireConfirmed: true,
+	})
 	if err != nil && err != ErrNoCachedConn && req.Body != nil {
 		req.Body.Close()
 	}

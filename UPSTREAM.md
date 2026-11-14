@@ -729,3 +729,12 @@ and captured fields are never serialized as ticket state.
 The changes are isolated in `peer_transport_parameters.go`, configuration
 copying, the transport-parameter parser and handshake event handoff. Regressions
 cover current-handshake ownership, clone immutability, rejected state and tickets.
+
+## HTTP/3 preparation and ready pool snapshots
+
+Connection-start notification, confirmed cached attempts and drained-owner
+lifecycle are isolated in `http3/connection_start.go`, `connection_reuse.go`
+and `connection_retirement.go`. Transport hooks only publish one shared start
+event, reject a pending ready-only probe, and retain active retired owners.
+See [HTTP/3 maintenance](http3/UPSTREAM.md#connection-readiness-and-retirement).
+Browser delay and request-admission policies remain entirely in Surf.
