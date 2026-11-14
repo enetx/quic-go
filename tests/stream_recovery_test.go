@@ -18,8 +18,9 @@ import (
 )
 
 type recoveryDatagram struct {
-	number int64
-	target bool
+	number  int64
+	target  bool
+	advance bool
 }
 
 // recoveryWireUDP receives one normal short-header qlog record for each ordinary
@@ -37,9 +38,11 @@ type recoveryWireUDP struct {
 	originalNumber                       int64
 	copies, dataAfterACK                 int
 	originalLost, lossBeforeCopy         bool
+	waitForLoss, released                bool
 	ptoExpirations                       int
 	acked                                bool
 	captured, acknowledged, confirmed    chan struct{}
+	advanceWritten, ackProgress          chan int64
 	capturedOnce, ackOnce, confirmedOnce sync.Once
 }
 
@@ -68,6 +71,9 @@ func (r *recoveryWireUDP) RecordEvent(event qlogwriter.Event) {
 			if stream, ok := f.Frame.(*qlog.StreamFrame); ok && stream.StreamID == 4 {
 				meta.target = true
 			}
+			if _, ok := f.Frame.(*qlog.DatagramFrame); ok {
+				meta.advance = true
+			}
 		}
 		if meta.target && r.acked {
 			r.dataAfterACK++
@@ -86,6 +92,12 @@ func (r *recoveryWireUDP) RecordEvent(event qlogwriter.Event) {
 			case *qlog.HandshakeDoneFrame:
 				r.confirmedOnce.Do(func() { close(r.confirmed) })
 			case *qlog.AckFrame:
+				if len(frame.AckRanges) > 0 {
+					select {
+					case r.ackProgress <- int64(frame.AckRanges[0].Largest):
+					default:
+					}
+				}
 				if r.originalNumber < 0 {
 					continue
 				}
@@ -116,6 +128,16 @@ func (r *recoveryWireUDP) WriteTo(data []byte, addr net.Addr) (int, error) {
 			return 0, net.ErrClosed
 		}
 	}
+	// Notify the test after this intercepted UDP write even if a co-packetized
+	// STREAM copy makes us deliberately discard the DATAGRAM as well.
+	if meta.advance {
+		defer func() {
+			select {
+			case r.advanceWritten <- meta.number:
+			case <-r.ctx.Done():
+			}
+		}()
+	}
 	r.mu.Lock()
 	if !r.armed || !meta.target || r.acked {
 		r.mu.Unlock()
@@ -129,11 +151,12 @@ func (r *recoveryWireUDP) WriteTo(data []byte, addr net.Addr) (int, error) {
 		return len(data), nil
 	}
 	r.copies++
-	if r.copies == 1 {
+	original := r.original
+	release := !r.released && (!r.waitForLoss || r.originalLost)
+	if release {
+		r.released = true
 		r.lossBeforeCopy = r.originalLost
 	}
-	original := r.original
-	release := r.copies == 1
 	r.mu.Unlock()
 	if release {
 		if _, err := r.PacketConn.WriteTo(original, addr); err != nil {
@@ -188,7 +211,11 @@ func TestLateOriginalSTREAMACKOnEncryptedUDP(t *testing.T) {
 				socket, err := net.ListenPacket("udp", "127.0.0.1:0")
 				require.NoError(t, err)
 				defer socket.Close()
-				packet := &recoveryWireUDP{PacketConn: socket, ctx: ctx, normal: make(chan recoveryDatagram, 1024), coalesced: make(map[qlog.DatagramPayloadChecksum]recoveryDatagram), originalNumber: -1, captured: make(chan struct{}), acknowledged: make(chan struct{}), confirmed: make(chan struct{})}
+				packet := &recoveryWireUDP{PacketConn: socket, ctx: ctx, normal: make(chan recoveryDatagram, 1024), coalesced: make(map[qlog.DatagramPayloadChecksum]recoveryDatagram), originalNumber: -1, captured: make(chan struct{}), acknowledged: make(chan struct{}), confirmed: make(chan struct{}), advanceWritten: make(chan int64, 16), ackProgress: make(chan int64, 1024)}
+				// A slow scheduler may let PTO run before packet-threshold loss.
+				// The loss scenario must release the original only after real loss,
+				// independently of how many earlier PTO copies were discarded.
+				packet.waitForLoss = trigger == "loss"
 				transport := &quic.Transport{Conn: packet, ConnectionIDLength: 8}
 				defer transport.Close()
 				config := &quic.Config{EnableDatagrams: true, DisablePathMTUDiscovery: true, ClientHandshake: &quic.ClientHandshake{DisableClientHelloScrambling: true, StreamDataRecovery: true, SeparatePacketNumberSpaces: separate, DisablePacketNumberSkipping: true, ApplicationProbePackets: 1}, Tracer: func(context.Context, bool, quic.ConnectionID) qlogwriter.Trace { return &recoveryWireTrace{packet} }}
@@ -200,10 +227,9 @@ func TestLateOriginalSTREAMACKOnEncryptedUDP(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					if _, err = stream.Write([]byte(text)); err != nil {
-						return err
-					}
-					if err = stream.Close(); err != nil {
+					// Stage payload and FIN in one connection turn. A separately
+					// packetized new FIN is not a copy of the delayed payload.
+					if _, err = client.TryWriteStreamBatch([]quic.StreamWrite{{StreamID: stream.StreamID(), Data: []byte(text), Fin: true}}); err != nil {
 						return err
 					}
 					body, err := io.ReadAll(stream)
@@ -222,6 +248,17 @@ func TestLateOriginalSTREAMACKOnEncryptedUDP(t *testing.T) {
 				packet.mu.Lock()
 				packet.armed = true
 				packet.mu.Unlock()
+				advance := func(text string) int64 {
+					t.Helper()
+					require.NoError(t, client.SendDatagram([]byte(text)))
+					select {
+					case pn := <-packet.advanceWritten:
+						return pn
+					case <-ctx.Done():
+						t.Fatal(ctx.Err())
+						return -1
+					}
+				}
 				done := make(chan error, 1)
 				go func() { done <- exchange("the original STREAM must satisfy every copy") }()
 				select {
@@ -233,8 +270,9 @@ func TestLateOriginalSTREAMACKOnEncryptedUDP(t *testing.T) {
 					// Fresh ack-eliciting packets let the peer acknowledge beyond the delayed
 					// original. They induce actual loss before the original finally arrives.
 					for range 4 {
-						require.NoError(t, client.SendDatagram([]byte("advance ACK")))
-						time.Sleep(time.Millisecond)
+						// Wait for an intercepted UDP write, rather than assuming a sleep
+						// made each DATAGRAM into a distinct QUIC packet.
+						advance("advance ACK")
 					}
 				}
 				select {
@@ -249,9 +287,20 @@ func TestLateOriginalSTREAMACKOnEncryptedUDP(t *testing.T) {
 					t.Fatal(ctx.Err())
 				}
 				// Advance ACKs beyond the discarded copy, exercising its eventual OnLost.
+				var last int64
 				for range 6 {
-					require.NoError(t, client.SendDatagram([]byte("after original ACK")))
-					time.Sleep(2 * time.Millisecond)
+					last = advance("after original ACK")
+				}
+			ackBarrier:
+				for {
+					select {
+					case pn := <-packet.ackProgress:
+						if pn >= last {
+							break ackBarrier
+						}
+					case <-ctx.Done():
+						t.Fatal(ctx.Err())
+					}
 				}
 				packet.mu.Lock()
 				copies, late := packet.copies, packet.dataAfterACK

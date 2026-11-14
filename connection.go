@@ -1102,6 +1102,11 @@ func (c *Conn) handlePackets() (wasProcessed bool, _ error) {
 		if processed {
 			wasProcessed = true
 		}
+		// A per-datagram ACK policy must reach the send loop as soon as it
+		// queues an ACK, even when the receive queue remains full.
+		if c.receivedPacketHandler.ShouldFlushACK() {
+			break
+		}
 		// Prioritize sending of new CRYPTO data.
 		// This is especially relevant when processing 0-RTT packets.
 		if !c.handshakeComplete && (c.initialStream.HasData() || c.handshakeStream.HasData()) {

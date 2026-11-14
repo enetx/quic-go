@@ -57,7 +57,7 @@ func (h *sentPacketHandler) packetNumberLength(pn, largestAcked protocol.PacketN
 		return native
 	}
 	least := pn
-	for n, p := range h.hist.Packets() {
+	for n, p := range h.history(space).Packets() {
 		if p.EncryptionLevel.PacketNumberSpace() == space {
 			least = n
 			break
@@ -104,7 +104,7 @@ func AckProbeNeeded(handler SentPacketHandler, now monotime.Time, policy func(Ac
 		return false
 	}
 	info := AckProbeInfo{PTO: h.rttStats.PTO(h.handshakeConfirmed)}
-	for _, p := range h.hist.Packets() {
+	for _, p := range h.history(protocol.PacketNumberSpaceAppData).Packets() {
 		if p.EncryptionLevel.PacketNumberSpace() == protocol.PacketNumberSpaceAppData && !p.isPathProbePacket {
 			info.OutstandingPackets++
 		}

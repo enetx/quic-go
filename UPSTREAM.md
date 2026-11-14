@@ -695,6 +695,21 @@ metadata, ends the mechanism. Authentication failures and retired keys do not
 trigger it. Firefox's selection policy remains in Surf; default clients and
 servers do not enable it. PING only retains the existing CRYPTO/ACK behavior.
 
+## Receive-loop ACK policy and packet-space snapshots
+
+`AckPolicy.FlushOnPacket` gives an already queued application ACK a send
+opportunity before the next received UDP datagram, including a full receive
+queue. It preserves socket batch reads; native batching remains the default.
+No browser values live in the engine. The hook in `Conn.handlePackets` only
+queries pending ACK state, without consuming ranges or resetting timers.
+Socket backpressure can still postpone transmission.
+
+Client packet-number and ACK-probe policies inspect `history(space)` so explicit
+separate number spaces include the correct 0-RTT/1-RTT history. Tests cover full
+receive queues, wakeups, ACK reset, native batching, removed slots and path probes
+in both numbering modes. Linux captures of actual browser transfers are retained
+as sanitized observations in Surf's `linux_load` fixtures.
+
 ## Optional peer transport extensions
 
 `Config.PeerTransportParameterIDs` selects otherwise unknown extension bytes for

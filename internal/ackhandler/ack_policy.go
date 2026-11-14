@@ -33,6 +33,10 @@ const (
 // native behavior. It neither negotiates ACK_FREQUENCY nor changes peer ACKs.
 // A configured policy keeps the earliest pending deadline rather than sliding it.
 type AckPolicy struct {
+	// FlushOnPacket gives a queued ACK a send opportunity before processing the
+	// next received UDP datagram. False retains native receive-queue batching.
+	// Socket backpressure can still postpone transmission.
+	FlushOnPacket bool
 	// PacketThreshold is the initial ack-eliciting packet threshold; zero uses native.
 	PacketThreshold uint64
 	// DecimationThreshold, when nonzero, replaces PacketThreshold after a packet
@@ -47,6 +51,14 @@ type AckPolicy struct {
 	Reordering            AckReorderingMode
 	MissingPacketAckLimit uint64
 	ECN                   AckECNMode
+}
+
+// ShouldFlushACK reports a pending policy-selected ACK without consuming its
+// ranges or resetting its timer. It never changes native receive batching.
+func (h *ReceivedPacketHandler) ShouldFlushACK() bool {
+	return h.appDataPackets.ackPolicy != nil &&
+		h.appDataPackets.ackPolicy.FlushOnPacket &&
+		h.appDataPackets.ackQueued && h.appDataPackets.hasNewAck
 }
 
 func (p *AckPolicy) Clone() *AckPolicy {

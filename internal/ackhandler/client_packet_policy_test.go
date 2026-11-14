@@ -1,6 +1,7 @@
 package ackhandler
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -9,6 +10,37 @@ import (
 	"github.com/enetx/quic-go/internal/utils"
 	"github.com/stretchr/testify/require"
 )
+
+func TestClientPacketPolicySeparateHistories(t *testing.T) {
+	for _, separate := range []bool{false, true} {
+		t.Run(fmt.Sprint(separate), func(t *testing.T) {
+			h := policyTestHandler(protocol.PerspectiveClient)
+			if separate {
+				h.separateSpaces = newSeparatePacketNumberSpaces(0)
+			}
+			// Include Initial, 0-RTT, 1-RTT, a path probe and a removed ACK-only
+			// slot. Only the current space's retained regular packets may count.
+			initial := h.history(protocol.PacketNumberSpaceInitial)
+			initial.SentPacket(0, &packet{EncryptionLevel: protocol.EncryptionInitial})
+			app := h.history(protocol.PacketNumberSpaceAppData)
+			app.SentPacket(1, &packet{EncryptionLevel: protocol.Encryption0RTT})
+			app.SentPacket(2, &packet{EncryptionLevel: protocol.Encryption1RTT})
+			app.SentPacket(3, &packet{EncryptionLevel: protocol.Encryption1RTT})
+			app.SentPathProbePacket(4, &packet{EncryptionLevel: protocol.Encryption1RTT})
+			require.NoError(t, app.Remove(2))
+			var snapshot PacketNumberLengthInfo
+			SetPacketNumberLengthPolicy(h, func(info PacketNumberLengthInfo) uint8 { snapshot = info; return 1 })
+			h.packetNumberLength(5, -1, protocol.PacketNumberSpaceAppData)
+			require.EqualValues(t, 1, snapshot.LeastUnacknowledged)
+			h.packetNumberLength(5, -1, protocol.PacketNumberSpaceInitial)
+			require.Zero(t, snapshot.LeastUnacknowledged)
+			require.True(t, AckProbeNeeded(h, monotime.Now(), func(info AckProbeInfo) bool {
+				require.EqualValues(t, 2, info.OutstandingPackets)
+				return true
+			}))
+		})
+	}
+}
 
 func policyTestHandler(pers protocol.Perspective) *sentPacketHandler {
 	return NewSentPacketHandler(0, 1200, utils.NewRTTStats(), &utils.ConnectionStats{}, false, false, nil, pers, nil, utils.DefaultLogger).(*sentPacketHandler)
